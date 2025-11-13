@@ -1,0 +1,161 @@
+// Prisma schema for Safeguard-style Telegram Bot
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// Verified users in Telegram groups
+model User {
+  id           String   @id @default(cuid())
+  telegramId   BigInt   @unique
+  username     String?
+  firstName    String?
+  lastName     String?
+  isBot        Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // Relations
+  verifications GroupVerification[]
+
+  @@index([telegramId])
+  @@map("users")
+}
+
+// Telegram groups/chats being monitored
+model Group {
+  id           String   @id @default(cuid())
+  telegramId   BigInt   @unique
+  title        String
+  type         String   // 'group', 'supergroup', 'channel'
+  description  String?
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // Relations
+  verifications GroupVerification[]
+  trackedTokens TrackedToken[]
+
+  @@index([telegramId])
+  @@map("groups")
+}
+
+// User verification status per group
+model GroupVerification {
+  id         String   @id @default(cuid())
+  userId     String
+  groupId    String
+  verifiedAt DateTime @default(now())
+  isVerified Boolean  @default(true)
+
+  // Relations
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  group Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, groupId])
+  @@index([userId])
+  @@index([groupId])
+  @@map("group_verifications")
+}
+
+// Tokens being tracked for buy/sell alerts
+model TrackedToken {
+  id              String   @id @default(cuid())
+  groupId         String
+  chain           String   // 'solana', 'ethereum', 'bsc', etc.
+  tokenAddress    String
+  tokenSymbol     String
+  tokenName       String?
+  pairAddress     String?  // DEX pair address
+  minAmount       Float    @default(0) // Minimum amount to trigger alert
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  // Relations
+  group        Group         @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  transactions Transaction[]
+
+  @@unique([groupId, chain, tokenAddress])
+  @@index([chain, tokenAddress])
+  @@index([groupId])
+  @@map("tracked_tokens")
+}
+
+// Blockchain transactions (buys/sells)
+model Transaction {
+  id              String   @id @default(cuid())
+  tokenId         String
+  txHash          String
+  chain           String
+  walletAddress   String
+  type            String   // 'buy', 'sell'
+  amountToken     Float
+  amountNative    Float    // SOL, ETH, BNB, etc.
+  priceUsd        Float?
+  timestamp       DateTime
+  blockNumber     BigInt?
+  alertSent       Boolean  @default(false)
+  createdAt       DateTime @default(now())
+
+  // Relations
+  token TrackedToken @relation(fields: [tokenId], references: [id], onDelete: Cascade)
+
+  @@unique([chain, txHash])
+  @@index([tokenId])
+  @@index([walletAddress])
+  @@index([timestamp])
+  @@map("transactions")
+}
+
+// Daily statistics per token
+model DailyStats {
+  id           String   @id @default(cuid())
+  date         DateTime
+  chain        String
+  tokenAddress String
+  tokenSymbol  String
+  buyCount     Int      @default(0)
+  sellCount    Int      @default(0)
+  volumeUsd    Float    @default(0)
+  uniqueBuyers Int      @default(0)
+  uniqueSellers Int     @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([date, chain, tokenAddress])
+  @@index([date])
+  @@index([chain, tokenAddress])
+  @@map("daily_stats")
+}
+
+// Admin users with elevated permissions
+model Admin {
+  id         String   @id @default(cuid())
+  telegramId BigInt   @unique
+  username   String?
+  role       String   @default("admin") // 'admin', 'superadmin'
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([telegramId])
+  @@map("admins")
+}
+
+// System configuration and settings
+model Config {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  value     String
+  category  String   @default("general")
+  updatedAt DateTime @updatedAt
+
+  @@map("config")
+}
