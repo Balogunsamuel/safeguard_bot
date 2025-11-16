@@ -23,6 +23,7 @@ export class UserService {
           lastName: telegramUser.last_name,
           isBot: telegramUser.is_bot,
         },
+        include: { verifications: true },
       });
 
       logger.debug(`User upserted: ${user.id} (Telegram ID: ${telegramUser.id})`);

@@ -1,13 +1,20 @@
-import { Telegraf, Context, Markup } from 'telegraf';
+import { Telegraf, Context } from 'telegraf';
 import { message } from 'telegraf/filters';
+import { ethers } from 'ethers';
 import config from './config';
 import logger from './utils/logger';
 import { connectDatabase } from './utils/database';
 import { connectRedis, CacheService } from './utils/redis';
+import prisma from './utils/database';
 import userService from './services/user.service';
 import groupService from './services/group.service';
 import tokenService from './services/token.service';
-import transactionService from './services/transaction.service';
+import buttonService from './services/button.service';
+import emojiService from './services/emoji.service';
+import mediaService from './services/media.service';
+import mevService from './services/mev.service';
+import competitionService from './services/competition.service';
+import trendingService from './services/trending.service';
 import * as messages from './templates/messages';
 import { sanitizeInput } from './utils/formatters';
 
@@ -61,6 +68,67 @@ async function isAdmin(ctx: Context): Promise<boolean> {
 }
 
 /**
+ * Get Uniswap V2 pair address for a token
+ */
+async function getPairAddress(chain: string, tokenAddress: string): Promise<string | null> {
+  try {
+    // Factory addresses for different chains
+    const FACTORY_ADDRESSES: { [key: string]: string } = {
+      ethereum: '0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f', // Uniswap V2
+      bsc: '0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73', // PancakeSwap V2
+    };
+
+    // WETH/WBNB addresses
+    const WRAPPED_NATIVE: { [key: string]: string } = {
+      ethereum: '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2', // WETH
+      bsc: '0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c', // WBNB
+    };
+
+    const factoryAddress = FACTORY_ADDRESSES[chain.toLowerCase()];
+    const wrappedNative = WRAPPED_NATIVE[chain.toLowerCase()];
+
+    if (!factoryAddress || !wrappedNative) {
+      logger.warn(`Chain ${chain} not supported for automatic pair detection`);
+      return null;
+    }
+
+    // Get provider
+    let rpcUrl: string | undefined;
+    if (chain.toLowerCase() === 'ethereum') {
+      rpcUrl = config.blockchain.ethereum.rpcUrl;
+    } else if (chain.toLowerCase() === 'bsc') {
+      rpcUrl = config.blockchain.bsc.rpcUrl;
+    }
+
+    if (!rpcUrl) {
+      logger.warn(`No RPC URL configured for ${chain}`);
+      return null;
+    }
+
+    const provider = new ethers.JsonRpcProvider(rpcUrl);
+
+    // Uniswap V2 Factory ABI (just the getPair function)
+    const factoryAbi = ['function getPair(address tokenA, address tokenB) view returns (address pair)'];
+    const factory = new ethers.Contract(factoryAddress, factoryAbi, provider);
+
+    // Get pair address
+    const pairAddress = await factory.getPair(tokenAddress, wrappedNative);
+
+    // Check if pair exists (non-zero address)
+    if (pairAddress === '0x0000000000000000000000000000000000000000') {
+      logger.warn(`No pair found for token ${tokenAddress} on ${chain}`);
+      return null;
+    }
+
+    logger.info(`Found pair address ${pairAddress} for token ${tokenAddress} on ${chain}`);
+    return pairAddress;
+  } catch (error) {
+    logger.error('Error fetching pair address:', error);
+    return null;
+  }
+}
+
+/**
  * Start command
  */
 bot.command('start', async (ctx) => {
@@ -101,11 +169,12 @@ bot.command('help', async (ctx) => {
 });
 
 /**
- * New member handler - send verification prompt
+ * New member handler - send welcome message and verification prompt
  */
 bot.on(message('new_chat_members'), async (ctx) => {
   try {
     const newMembers = ctx.message.new_chat_members;
+    const groupName = 'title' in ctx.chat ? ctx.chat.title : 'this group';
 
     for (const member of newMembers) {
       // Skip bots
@@ -113,6 +182,11 @@ bot.on(message('new_chat_members'), async (ctx) => {
 
       // Create/update user
       await userService.upsertUser(member);
+
+      // Send welcome message
+      await ctx.reply(messages.newMemberWelcome(member.first_name, groupName), {
+        parse_mode: 'Markdown',
+      });
 
       // Send verification prompt
       await ctx.reply(messages.verificationPrompt(member.first_name), {
@@ -141,7 +215,7 @@ bot.action(/verify:(\d+)/, async (ctx) => {
     const userId = ctx.match[1];
 
     if (!ctx.from || ctx.from.id.toString() !== userId) {
-      return ctx.answerCbQuery('This verification is not for you!');
+      return await ctx.answerCbQuery('This verification is not for you!');
     }
 
     // Get or create user
@@ -152,12 +226,17 @@ bot.action(/verify:(\d+)/, async (ctx) => {
 
     // Get or create group
     if (!ctx.chat || !('title' in ctx.chat)) {
-      return ctx.answerCbQuery('Verification only works in groups!');
+      return await ctx.answerCbQuery('Verification only works in groups!');
     }
 
     let group = await groupService.getGroupByTelegramId(ctx.chat.id);
     if (!group) {
       group = await groupService.upsertGroup(ctx.chat);
+    }
+
+    // Additional null checks for TypeScript
+    if (!user || !group) {
+      return await ctx.answerCbQuery('Verification failed. Please try again.');
     }
 
     // Verify user in group
@@ -171,6 +250,7 @@ bot.action(/verify:(\d+)/, async (ctx) => {
     logger.error('Error in verification callback:', error);
     await ctx.answerCbQuery('Verification failed. Please try again.');
   }
+  return;
 });
 
 /**
@@ -204,6 +284,29 @@ bot.command('addtoken', async (ctx) => {
       group = await groupService.upsertGroup(ctx.chat);
     }
 
+    // For EVM chains, try to fetch the pair address automatically
+    let pairAddress: string | undefined;
+    const normalizedChain = chain.toLowerCase();
+    if (normalizedChain === 'ethereum' || normalizedChain === 'bsc' || normalizedChain === 'eth') {
+      const statusMsg = await ctx.reply('🔍 Fetching pair address...');
+      pairAddress = await getPairAddress(normalizedChain === 'eth' ? 'ethereum' : normalizedChain, address) || undefined;
+
+      try {
+        await ctx.telegram.deleteMessage(ctx.chat.id, statusMsg.message_id);
+      } catch (err) {
+        // Ignore error if we can't delete the message
+      }
+
+      if (!pairAddress) {
+        await ctx.reply(
+          '⚠️ Warning: Could not find pair address automatically.\n' +
+          'The token has been added, but buy alerts may not work until a pair address is set.\n\n' +
+          'You can manually update it later if needed.',
+          { parse_mode: 'Markdown' }
+        );
+      }
+    }
+
     // Add token
     const token = await tokenService.addTrackedToken({
       groupId: group.id,
@@ -211,6 +314,7 @@ bot.command('addtoken', async (ctx) => {
       tokenAddress: sanitizeInput(address),
       tokenSymbol: sanitizeInput(symbol),
       tokenName: name ? sanitizeInput(name) : undefined,
+      pairAddress,
       minAmount: 0,
     });
 
@@ -224,7 +328,7 @@ bot.command('addtoken', async (ctx) => {
       { parse_mode: 'Markdown' }
     );
 
-    logger.info(`Token ${symbol} added to group ${ctx.chat.id}`);
+    logger.info(`Token ${symbol} added to group ${ctx.chat.id}${pairAddress ? ` with pair ${pairAddress}` : ' (no pair address)'}`);
   } catch (error) {
     logger.error('Error in addtoken command:', error);
     await ctx.reply(messages.errorMessage('Failed to add token.'));
@@ -349,6 +453,66 @@ bot.command('setthreshold', async (ctx) => {
 });
 
 /**
+ * Set USD threshold command (Admin only)
+ * Usage: /setminusd <symbol> <usd_amount>
+ */
+bot.command('setminusd', async (ctx) => {
+  try {
+    if (!(await isAdmin(ctx))) {
+      return ctx.reply(messages.unauthorizedMessage());
+    }
+
+    if (!ctx.chat || !('title' in ctx.chat)) {
+      return ctx.reply('This command only works in groups!');
+    }
+
+    const args = ctx.message.text.split(' ').slice(1);
+    if (args.length < 2) {
+      return ctx.reply(
+        '💵 **Set Minimum Buy Alert in USD**\n\n' +
+          'Usage: /setminusd <symbol> <usd_amount>\n' +
+          'Example: /setminusd BONK 50\n\n' +
+          'This will only alert when a buy transaction is worth $50 or more.',
+        { parse_mode: 'Markdown' }
+      );
+    }
+
+    const [symbol, amountStr] = args;
+    const amountUsd = parseFloat(amountStr);
+
+    if (isNaN(amountUsd) || amountUsd < 0) {
+      return ctx.reply('❌ Invalid amount. Please provide a positive number in USD.');
+    }
+
+    const group = await groupService.getGroupByTelegramId(ctx.chat.id);
+    if (!group) {
+      return ctx.reply('Group not found!');
+    }
+
+    const tokens = await tokenService.getGroupTokens(group.id);
+    const token = tokens.find((t) => t.tokenSymbol.toLowerCase() === symbol.toLowerCase());
+
+    if (!token) {
+      return ctx.reply(`Token ${symbol} not found in tracked list. Use /listtokens to see all tracked tokens.`);
+    }
+
+    await tokenService.updateMinAmountUsd(token.id, amountUsd);
+    await ctx.reply(
+      `✅ **Minimum Alert Threshold Updated**\n\n` +
+        `Token: $${symbol}\n` +
+        `Minimum USD Value: $${amountUsd.toFixed(2)}\n\n` +
+        `You will now only receive alerts when a buy transaction is worth $${amountUsd.toFixed(2)} or more.`,
+      { parse_mode: 'Markdown' }
+    );
+
+    logger.info(`USD threshold updated for ${symbol} to $${amountUsd} in group ${ctx.chat.id}`);
+  } catch (error) {
+    logger.error('Error in setminusd command:', error);
+    await ctx.reply(messages.errorMessage('Failed to update USD threshold.'));
+  }
+});
+
+/**
  * Group stats command
  */
 bot.command('groupstats', async (ctx) => {
@@ -380,6 +544,510 @@ bot.command('groupstats', async (ctx) => {
   } catch (error) {
     logger.error('Error in groupstats command:', error);
     await ctx.reply(messages.errorMessage('Failed to fetch stats.'));
+  }
+});
+
+/**
+ * Set custom buttons command (Admin only)
+ * Usage: /setbuttons <symbol> <text1> <url1> [<text2> <url2>] [<text3> <url3>]
+ */
+bot.command('setbuttons', async (ctx) => {
+  try {
+    if (!(await isAdmin(ctx))) {
+      return ctx.reply(messages.unauthorizedMessage());
+    }
+
+    if (!ctx.chat || !('title' in ctx.chat)) {
+      return ctx.reply('This command only works in groups!');
+    }
+
+    const args = ctx.message.text.split(' ').slice(1);
+    if (args.length < 3 || args.length % 2 === 0) {
+      return ctx.reply(
+        '**Set Custom Buttons**\n\n' +
+          'Usage: `/setbuttons <symbol> <text1> <url1> [<text2> <url2>] [<text3> <url3>]`\n\n' +
+          'Example: `/setbuttons BONK "Buy Now" https://raydium.io "Chart" https://dexscreener.com`\n\n' +
+          'Max 3 buttons allowed.',
+        { parse_mode: 'Markdown' }
+      );
+    }
+
+    const symbol = sanitizeInput(args[0]);
+    const group = await groupService.getGroupByTelegramId(ctx.chat.id);
+    if (!group) return ctx.reply('Group not found!');
+
+    const tokens = await tokenService.getGroupTokens(group.id);
+    const token = tokens.find((t) => t.tokenSymbol.toLowerCase() === symbol.toLowerCase());
+    if (!token) return ctx.reply(`Token ${symbol} not found.`);
+
+    // Parse buttons
+    const buttons = [];
+    for (let i = 1; i < args.length && buttons.length < 3; i += 2) {
+      if (i + 1 < args.length) {
+        buttons.push({
+          text: args[i].replace(/"/g, ''),
+          url: args[i + 1].replace(/"/g, ''),
+        });
+      }
+    }
+
+    await buttonService.setCustomButtons(token.id, buttons);
+    await ctx.reply(
+      `✅ **Custom Buttons Set for $${symbol}**\n\n${buttons.map((b, i) => `${i + 1}. ${b.text}: ${b.url}`).join('\n')}`,
+      { parse_mode: 'Markdown' }
+    );
+  } catch (error) {
+    logger.error('Error in setbuttons command:', error);
+    await ctx.reply(messages.errorMessage('Failed to set buttons.'));
+  }
+});
+
+/**
+ * Clear custom buttons command (Admin only)
+ */
+bot.command('clearbuttons', async (ctx) => {
+  try {
+    if (!(await isAdmin(ctx))) {
+      return ctx.reply(messages.unauthorizedMessage());
+    }
+
+    if (!ctx.chat || !('title' in ctx.chat)) {
+      return ctx.reply('This command only works in groups!');
+    }
+
+    const args = ctx.message.text.split(' ').slice(1);
+    if (args.length === 0) {
+      return ctx.reply('Usage: `/clearbuttons <symbol>`', { parse_mode: 'Markdown' });
+    }
+
+    const symbol = sanitizeInput(args[0]);
+    const group = await groupService.getGroupByTelegramId(ctx.chat.id);
+    if (!group) return ctx.reply('Group not found!');
+
+    const tokens = await tokenService.getGroupTokens(group.id);
+    const token = tokens.find((t) => t.tokenSymbol.toLowerCase() === symbol.toLowerCase());
+    if (!token) return ctx.reply(`Token ${symbol} not found.`);
+
+    await buttonService.clearCustomButtons(token.id);
+    await ctx.reply(`✅ Custom buttons cleared for $${symbol}`);
+  } catch (error) {
+    logger.error('Error in clearbuttons command:', error);
+    await ctx.reply(messages.errorMessage('Failed to clear buttons.'));
+  }
+});
+
+/**
+ * Add a single button command (Admin only)
+ * Usage: /addbutton <symbol> <text> <url>
+ */
+bot.command('addbutton', async (ctx) => {
+  try {
+    if (!(await isAdmin(ctx))) {
+      return ctx.reply(messages.unauthorizedMessage());
+    }
+
+    if (!ctx.chat || !('title' in ctx.chat)) {
+      return ctx.reply('This command only works in groups!');
+    }
+
+    const args = ctx.message.text.split(' ').slice(1);
+    if (args.length < 3) {
+      return ctx.reply(
+        '**Add Custom Button**\n\n' +
+          'Usage: `/addbutton <symbol> <text> <url>`\n\n' +
+          'Example: `/addbutton BONK "Buy Now" https://raydium.io`\n\n' +
+          'This adds a button without replacing existing ones.\n' +
+          'Max 3 buttons total.',
+        { parse_mode: 'Markdown' }
+      );
+    }
+
+    const symbol = sanitizeInput(args[0]);
+    const group = await groupService.getGroupByTelegramId(ctx.chat.id);
+    if (!group) return ctx.reply('Group not found!');
+
+    const tokens = await tokenService.getGroupTokens(group.id);
+    const token = tokens.find((t) => t.tokenSymbol.toLowerCase() === symbol.toLowerCase());
+    if (!token) return ctx.reply(`Token ${symbol} not found.`);
+
+    // Get button text and URL
+    const buttonText = args[1].replace(/"/g, '');
+    const buttonUrl = args[2].replace(/"/g, '');
+
+    await buttonService.addCustomButton(token.id, {
+      text: buttonText,
+      url: buttonUrl,
+    });
+
+    // Get all buttons to show user
+    const allButtons = await buttonService.getCustomButtons(token.id);
+
+    await ctx.reply(
+      `✅ **Button Added for $${symbol}**\n\n` +
+        `Current Buttons:\n${allButtons.map((b, i) => `${i + 1}. ${b.text}: ${b.url}`).join('\n')}`,
+      { parse_mode: 'Markdown' }
+    );
+  } catch (error) {
+    logger.error('Error in addbutton command:', error);
+    await ctx.reply(messages.errorMessage(error instanceof Error ? error.message : 'Failed to add button.'));
+  }
+});
+
+/**
+ * Set emoji tiers command (Admin only)
+ */
+bot.command('setemoji', async (ctx) => {
+  try {
+    if (!(await isAdmin(ctx))) {
+      return ctx.reply(messages.unauthorizedMessage());
+    }
+
+    if (!ctx.chat || !('title' in ctx.chat)) {
+      return ctx.reply('This command only works in groups!');
+    }
+
+    const args = ctx.message.text.split(' ').slice(1);
+    if (args.length === 0) {
+      return ctx.reply(
+        '**Set Emoji Tiers**\n\n' +
+          'Usage: `/setemoji <symbol> [default]`\n\n' +
+          'Example: `/setemoji BONK default`\n\n' +
+          'This will set default emoji tiers:\n' +
+          '🐟 $0-$50 (Small)\n' +
+          '🐠 $50-$200 (Medium)\n' +
+          '🐬 $200-$1,000 (Large)\n' +
+          '🦈 $1,000-$5,000 (Shark)\n' +
+          '🐋 $5,000+ (Whale)',
+        { parse_mode: 'Markdown' }
+      );
+    }
+
+    const symbol = sanitizeInput(args[0]);
+    const group = await groupService.getGroupByTelegramId(ctx.chat.id);
+    if (!group) return ctx.reply('Group not found!');
+
+    const tokens = await tokenService.getGroupTokens(group.id);
+    const token = tokens.find((t) => t.tokenSymbol.toLowerCase() === symbol.toLowerCase());
+    if (!token) return ctx.reply(`Token ${symbol} not found.`);
+
+    await emojiService.setDefaultTiers(token.id);
+    await ctx.reply(
+      `✅ **Default Emoji Tiers Set for $${symbol}**\n\n` +
+        '🐟 $0-$50 (Small)\n' +
+        '🐠 $50-$200 (Medium)\n' +
+        '🐬 $200-$1,000 (Large)\n' +
+        '🦈 $1,000-$5,000 (Shark)\n' +
+        '🐋 $5,000+ (Whale)',
+      { parse_mode: 'Markdown' }
+    );
+  } catch (error) {
+    logger.error('Error in setemoji command:', error);
+    await ctx.reply(messages.errorMessage('Failed to set emoji tiers.'));
+  }
+});
+
+/**
+ * Set custom media command (Admin only)
+ */
+bot.command('setmedia', async (ctx) => {
+  try {
+    if (!(await isAdmin(ctx))) {
+      return ctx.reply(messages.unauthorizedMessage());
+    }
+
+    if (!ctx.chat || !('title' in ctx.chat)) {
+      return ctx.reply('This command only works in groups!');
+    }
+
+    const args = ctx.message.text.split(' ').slice(1);
+    if (args.length < 3) {
+      return ctx.reply(
+        '**Set Custom Media**\n\n' +
+          'Usage: `/setmedia <symbol> <gif|image|video> <url>`\n\n' +
+          'Example: `/setmedia BONK gif https://example.com/celebration.gif`',
+        { parse_mode: 'Markdown' }
+      );
+    }
+
+    const [symbol, typeStr, url] = args;
+    const type = typeStr as 'gif' | 'image' | 'video';
+
+    if (!['gif', 'image', 'video'].includes(type)) {
+      return ctx.reply('Invalid media type. Use: gif, image, or video');
+    }
+
+    const group = await groupService.getGroupByTelegramId(ctx.chat.id);
+    if (!group) return ctx.reply('Group not found!');
+
+    const tokens = await tokenService.getGroupTokens(group.id);
+    const token = tokens.find((t) => t.tokenSymbol.toLowerCase() === symbol.toLowerCase());
+    if (!token) return ctx.reply(`Token ${symbol} not found.`);
+
+    await mediaService.setMedia(token.id, type, url);
+    await ctx.reply(
+      `✅ **Custom ${type.toUpperCase()} Set for $${symbol}**\n\nURL: ${url}`,
+      { parse_mode: 'Markdown' }
+    );
+  } catch (error) {
+    logger.error('Error in setmedia command:', error);
+    await ctx.reply(messages.errorMessage('Failed to set media.'));
+  }
+});
+
+/**
+ * Set whale threshold command (Admin only)
+ */
+bot.command('setwhale', async (ctx) => {
+  try {
+    if (!(await isAdmin(ctx))) {
+      return ctx.reply(messages.unauthorizedMessage());
+    }
+
+    if (!ctx.chat || !('title' in ctx.chat)) {
+      return ctx.reply('This command only works in groups!');
+    }
+
+    const args = ctx.message.text.split(' ').slice(1);
+    if (args.length < 2) {
+      return ctx.reply(
+        '**Set Whale Threshold**\n\n' +
+          'Usage: `/setwhale <symbol> <usd_amount>`\n\n' +
+          'Example: `/setwhale BONK 5000`\n\n' +
+          'Buys above this USD value will show a special 🐋 whale indicator.',
+        { parse_mode: 'Markdown' }
+      );
+    }
+
+    const [symbol, amountStr] = args;
+    const amountUsd = parseFloat(amountStr);
+
+    if (isNaN(amountUsd) || amountUsd < 0) {
+      return ctx.reply('Invalid amount. Please provide a positive number.');
+    }
+
+    const group = await groupService.getGroupByTelegramId(ctx.chat.id);
+    if (!group) return ctx.reply('Group not found!');
+
+    const tokens = await tokenService.getGroupTokens(group.id);
+    const token = tokens.find((t) => t.tokenSymbol.toLowerCase() === symbol.toLowerCase());
+    if (!token) return ctx.reply(`Token ${symbol} not found.`);
+
+    await prisma.trackedToken.update({
+      where: { id: token.id },
+      data: { whaleThresholdUsd: amountUsd },
+    });
+
+    await ctx.reply(
+      `✅ **Whale Threshold Set for $${symbol}**\n\n` +
+        `Buys worth $${amountUsd.toFixed(2)} or more will show a 🐋 whale alert!`,
+      { parse_mode: 'Markdown' }
+    );
+  } catch (error) {
+    logger.error('Error in setwhale command:', error);
+    await ctx.reply(messages.errorMessage('Failed to set whale threshold.'));
+  }
+});
+
+/**
+ * MEV Blacklist commands (Admin only)
+ */
+bot.command('blacklist', async (ctx) => {
+  try {
+    if (!(await isAdmin(ctx))) {
+      return ctx.reply(messages.unauthorizedMessage());
+    }
+
+    const args = ctx.message.text.split(' ').slice(1);
+    if (args.length === 0) {
+      return ctx.reply(
+        '**MEV Blacklist Commands**\n\n' +
+          '`/blacklist add <address> [reason]` - Add wallet to blacklist\n' +
+          '`/blacklist remove <address>` - Remove from blacklist\n' +
+          '`/blacklist list [chain]` - View blacklist\n\n' +
+          'Blacklisted wallets will not trigger buy alerts.',
+        { parse_mode: 'Markdown' }
+      );
+    }
+
+    const action = args[0].toLowerCase();
+
+    if (action === 'add') {
+      if (args.length < 2) {
+        return ctx.reply('Usage: `/blacklist add <address> [reason]`', { parse_mode: 'Markdown' });
+      }
+
+      const address = args[1];
+      const reason = args.slice(2).join(' ') || 'MEV bot';
+
+      await mevService.addToBlacklist(address, 'all', reason, ctx.from?.username);
+      await ctx.reply(`✅ Added \`${address}\` to blacklist\nReason: ${reason}`, {
+        parse_mode: 'Markdown',
+      });
+    } else if (action === 'remove') {
+      if (args.length < 2) {
+        return ctx.reply('Usage: `/blacklist remove <address>`', { parse_mode: 'Markdown' });
+      }
+
+      const address = args[1];
+      await mevService.removeFromBlacklist(address);
+      await ctx.reply(`✅ Removed \`${address}\` from blacklist`, { parse_mode: 'Markdown' });
+    } else if (action === 'list') {
+      const chain = args[1];
+      const list = await mevService.getBlacklist(chain);
+
+      if (list.length === 0) {
+        return ctx.reply('Blacklist is empty.');
+      }
+
+      const message =
+        `**MEV Blacklist** (${list.length} entries)\n\n` +
+        list
+          .slice(0, 20)
+          .map((entry) => `• \`${entry.walletAddress.slice(0, 10)}...\` (${entry.chain})`)
+          .join('\n') +
+        (list.length > 20 ? `\n\n...and ${list.length - 20} more` : '');
+
+      await ctx.reply(message, { parse_mode: 'Markdown' });
+    } else {
+      return ctx.reply('Invalid action. Use: add, remove, or list');
+    }
+  } catch (error) {
+    logger.error('Error in blacklist command:', error);
+    await ctx.reply(messages.errorMessage('Failed to manage blacklist.'));
+  }
+});
+
+/**
+ * Competition commands (Admin only)
+ */
+bot.command('competition', async (ctx) => {
+  try {
+    if (!(await isAdmin(ctx))) {
+      return ctx.reply(messages.unauthorizedMessage());
+    }
+
+    if (!ctx.chat || !('title' in ctx.chat)) {
+      return ctx.reply('This command only works in groups!');
+    }
+
+    const args = ctx.message.text.split(' ').slice(1);
+    if (args.length === 0) {
+      return ctx.reply(
+        '**Competition Commands**\n\n' +
+          '`/competition start <name> [hours] [prize]` - Start competition\n' +
+          '`/competition stop` - End current competition\n' +
+          '`/competition leaderboard [limit]` - Show leaderboard\n\n' +
+          'Example: `/competition start "Weekend Rally" 48 "1 SOL"`',
+        { parse_mode: 'Markdown' }
+      );
+    }
+
+    const action = args[0].toLowerCase();
+    const group = await groupService.getGroupByTelegramId(ctx.chat.id);
+    if (!group) return ctx.reply('Group not found!');
+
+    if (action === 'start') {
+      const name = args[1] || 'Buy Competition';
+      const hours = parseInt(args[2]) || 24;
+      const prize = args.slice(3).join(' ') || undefined;
+
+      const startTime = new Date();
+      const endTime = new Date(Date.now() + hours * 60 * 60 * 1000);
+
+      await competitionService.createCompetition({
+        groupId: group.id,
+        name,
+        startTime,
+        endTime,
+        prizeInfo: prize,
+      });
+
+      await ctx.reply(
+        `🏆 **${name} Started!**\n\n` +
+          `Duration: ${hours} hours\n` +
+          `Ends: ${endTime.toLocaleString()}\n` +
+          (prize ? `Prize: ${prize}\n` : '') +
+          `\nLet the competition begin! Use /competition leaderboard to check standings.`,
+        { parse_mode: 'Markdown' }
+      );
+    } else if (action === 'stop') {
+      const active = await competitionService.getActiveCompetition(group.id);
+      if (!active) {
+        return ctx.reply('No active competition found.');
+      }
+
+      const leaderboard = await competitionService.getLeaderboard(active.id, 1);
+      const winner = leaderboard.length > 0 ? leaderboard[0].walletAddress : undefined;
+
+      await competitionService.endCompetition(active.id, winner);
+
+      await ctx.reply(
+        `🏁 **${active.name} Ended!**\n\n` +
+          (winner
+            ? `🥇 Winner: \`${winner.slice(0, 8)}...${winner.slice(-6)}\`\n` +
+              `Volume: $${leaderboard[0].totalVolume.toFixed(2)}`
+            : 'No participants'),
+        { parse_mode: 'Markdown' }
+      );
+    } else if (action === 'leaderboard') {
+      const active = await competitionService.getActiveCompetition(group.id);
+      if (!active) {
+        return ctx.reply('No active competition found.');
+      }
+
+      const limit = parseInt(args[1]) || 10;
+      const leaderboard = await competitionService.getLeaderboard(active.id, limit);
+
+      if (leaderboard.length === 0) {
+        return ctx.reply('No participants yet!');
+      }
+
+      const message =
+        `🏆 **${active.name}**\n\n` +
+        leaderboard
+          .map(
+            (entry, i) =>
+              `${i + 1}. \`${entry.walletAddress.slice(0, 8)}...\`\n` +
+              `   💰 $${entry.totalVolume.toFixed(2)} (${entry.totalBuys} buys)`
+          )
+          .join('\n\n');
+
+      await ctx.reply(message, { parse_mode: 'Markdown' });
+    }
+  } catch (error) {
+    logger.error('Error in competition command:', error);
+    await ctx.reply(messages.errorMessage('Failed to manage competition.'));
+  }
+});
+
+/**
+ * Trending command
+ */
+bot.command('trending', async (ctx) => {
+  try {
+    const args = ctx.message.text.split(' ').slice(1);
+    const limit = parseInt(args[0]) || 10;
+
+    const trending = await trendingService.getTrendingTokens(limit);
+
+    if (trending.length === 0) {
+      return ctx.reply('No trending data available yet.');
+    }
+
+    const message =
+      `🔥 **Trending Tokens (Last Hour)**\n\n` +
+      trending
+        .map(
+          (t) =>
+            `${t.rank}. **$${t.tokenSymbol}** (${t.chain.toUpperCase()})\n` +
+            `   📊 ${t.buyCount1h} buys | 💰 $${t.volumeUsd1h.toFixed(2)}`
+        )
+        .join('\n\n');
+
+    await ctx.reply(message, { parse_mode: 'Markdown' });
+  } catch (error) {
+    logger.error('Error in trending command:', error);
+    await ctx.reply(messages.errorMessage('Failed to fetch trending.'));
   }
 });
 

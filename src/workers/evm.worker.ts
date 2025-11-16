@@ -3,18 +3,21 @@ import config from '../config';
 import logger from '../utils/logger';
 import tokenService from '../services/token.service';
 import transactionService from '../services/transaction.service';
+import priceService from '../services/price.service';
+import emojiService from '../services/emoji.service';
+import mevService from '../services/mev.service';
+import buttonService from '../services/button.service';
+import mediaService from '../services/media.service';
 import bot from '../bot';
 import * as messages from '../templates/messages';
 
-// Uniswap V2 Swap event signature
-const SWAP_EVENT_SIGNATURE = '0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822';
-
-// Standard ERC20 ABI (Transfer event)
-const ERC20_ABI = [
-  'event Transfer(address indexed from, address indexed to, uint256 value)',
-  'function decimals() view returns (uint8)',
-  'function symbol() view returns (string)',
-];
+// Note: These constants are reserved for future use with advanced swap detection
+// const SWAP_EVENT_SIGNATURE = '0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822';
+// const ERC20_ABI = [
+//   'event Transfer(address indexed from, address indexed to, uint256 value)',
+//   'function decimals() view returns (uint8)',
+//   'function symbol() view returns (string)',
+// ];
 
 // Uniswap V2 Pair ABI
 const PAIR_ABI = [
@@ -147,8 +150,8 @@ export class EVMWorker {
         if (!this.isRunning) return;
 
         // Remove old listeners and add new ones for any newly added tokens
-        const updatedTokens = await tokenService.getActiveTokensByChain(chain);
-        // In production, you'd implement proper listener management here
+        // const updatedTokens = await tokenService.getActiveTokensByChain(chain);
+        // TODO: In production, implement proper listener management here
       }, 60000); // Check every minute
     } catch (error) {
       logger.error(`Error monitoring chain ${chain}:`, error);
@@ -176,7 +179,7 @@ export class EVMWorker {
       // Determine which token is token0 and token1
       const pairContract = new ethers.Contract(token.pairAddress, PAIR_ABI, provider);
       const token0Address = await pairContract.token0();
-      const token1Address = await pairContract.token1();
+      // const token1Address = await pairContract.token1(); // Reserved for future use
 
       const isToken0 = token0Address.toLowerCase() === token.tokenAddress.toLowerCase();
 
@@ -217,15 +220,41 @@ export class EVMWorker {
       const tokenAmountDecimal = parseFloat(ethers.formatUnits(tokenAmount, 18));
       const nativeAmountDecimal = parseFloat(ethers.formatUnits(nativeAmount, 18));
 
-      // Check if above threshold
-      if (tokenAmountDecimal < token.minAmount) return;
-
       // Get transaction details
       const tx = await provider.getTransaction(swapData.event.log.transactionHash);
       if (!tx) return;
 
       const block = await provider.getBlock(swapData.event.log.blockNumber);
       if (!block) return;
+
+      // Get native symbol
+      const nativeSymbol = chain === 'ethereum' ? 'ETH' : 'BNB';
+
+      // Get USD price
+      const priceUsd = await priceService.getTokenPriceUsd(
+        token.tokenAddress,
+        chain,
+        nativeAmountDecimal,
+        nativeSymbol
+      );
+
+      // TEMPORARY: Only alert on BUYS, skip sells
+      if (type === 'sell') {
+        logger.debug(`Skipping sell alert for ${token.tokenSymbol} (sell alerts disabled)`);
+        return;
+      }
+
+      // Check if above threshold (token amount OR USD value)
+      const meetsTokenThreshold = token.minAmount > 0 && tokenAmountDecimal >= token.minAmount;
+      const meetsUsdThreshold = token.minAmountUsd > 0 && priceUsd !== null && priceUsd !== undefined && priceUsd >= token.minAmountUsd;
+
+      // Alert if either threshold is met (or if both are 0, alert everything)
+      const shouldAlert =
+        (token.minAmount === 0 && token.minAmountUsd === 0) ||
+        meetsTokenThreshold ||
+        meetsUsdThreshold;
+
+      if (!shouldAlert) return;
 
       // Record transaction
       const transaction = await transactionService.recordTransaction({
@@ -236,6 +265,7 @@ export class EVMWorker {
         type,
         amountToken: tokenAmountDecimal,
         amountNative: nativeAmountDecimal,
+        priceUsd: priceUsd,
         timestamp: new Date(block.timestamp * 1000),
         blockNumber: BigInt(swapData.event.log.blockNumber),
       });
@@ -248,6 +278,7 @@ export class EVMWorker {
           type,
           amountToken: tokenAmountDecimal,
           amountNative: nativeAmountDecimal,
+          priceUsd: priceUsd,
         },
         swapData.event.log.transactionHash,
         chain,
@@ -270,43 +301,100 @@ export class EVMWorker {
       type: 'buy' | 'sell';
       amountToken: number;
       amountNative: number;
+      priceUsd?: number;
     },
     txHash: string,
     chain: string,
     timestamp: number
   ) {
     try {
+      // Check MEV blacklist
+      const isBlacklisted = await mevService.isBlacklisted(swapData.walletAddress, chain);
+      if (isBlacklisted) {
+        logger.debug(`Skipping alert for blacklisted wallet: ${swapData.walletAddress}`);
+        return;
+      }
+
       const nativeSymbol = chain === 'ethereum' ? 'ETH' : 'BNB';
+      const priceUsd = swapData.priceUsd || 0;
+
+      // Get emoji for this transaction
+      const emoji = await emojiService.getEmojiForValue(token.id, priceUsd);
+
+      // Check if whale
+      const isWhale = token.whaleThresholdUsd > 0 && priceUsd >= token.whaleThresholdUsd;
+
+      // Get custom buttons
+      const customButtons = await buttonService.getCustomButtons(token.id);
+      const replyMarkup = buttonService.formatTelegramButtons(customButtons);
+
+      // Get custom media
+      const media = await mediaService.getMedia(token.id);
+
+      const messageData = {
+        tokenSymbol: token.tokenSymbol,
+        walletAddress: swapData.walletAddress,
+        amountToken: swapData.amountToken,
+        amountNative: swapData.amountNative,
+        nativeSymbol,
+        priceUsd: swapData.priceUsd,
+        txHash,
+        chain,
+        timestamp: new Date(timestamp * 1000),
+        emoji: swapData.type === 'buy' ? emoji : undefined,
+        isWhale: swapData.type === 'buy' ? isWhale : undefined,
+      };
 
       const message =
         swapData.type === 'buy'
-          ? messages.buyAlert({
-              tokenSymbol: token.tokenSymbol,
-              walletAddress: swapData.walletAddress,
-              amountToken: swapData.amountToken,
-              amountNative: swapData.amountNative,
-              nativeSymbol,
-              txHash,
-              chain,
-              timestamp: new Date(timestamp * 1000),
-            })
-          : messages.sellAlert({
-              tokenSymbol: token.tokenSymbol,
-              walletAddress: swapData.walletAddress,
-              amountToken: swapData.amountToken,
-              amountNative: swapData.amountNative,
-              nativeSymbol,
-              txHash,
-              chain,
-              timestamp: new Date(timestamp * 1000),
-            });
+          ? messages.buyAlert(messageData as any)
+          : messages.sellAlert(messageData);
 
-      await bot.telegram.sendMessage(Number(token.group.telegramId), message, {
-        parse_mode: 'Markdown',
-      });
+      // Send with media if available
+      if (media && swapData.type === 'buy') {
+        if (media.type === 'gif') {
+          await bot.telegram.sendAnimation(
+            Number(token.group.telegramId),
+            media.url,
+            {
+              caption: message,
+              parse_mode: 'Markdown',
+              reply_markup: replyMarkup,
+            }
+          );
+        } else if (media.type === 'image') {
+          await bot.telegram.sendPhoto(
+            Number(token.group.telegramId),
+            media.url,
+            {
+              caption: message,
+              parse_mode: 'Markdown',
+              reply_markup: replyMarkup,
+            }
+          );
+        } else if (media.type === 'video') {
+          await bot.telegram.sendVideo(
+            Number(token.group.telegramId),
+            media.url,
+            {
+              caption: message,
+              parse_mode: 'Markdown',
+              reply_markup: replyMarkup,
+            }
+          );
+        }
+      } else {
+        // Send regular message
+        await bot.telegram.sendMessage(Number(token.group.telegramId), message, {
+          parse_mode: 'Markdown',
+          reply_markup: replyMarkup,
+        });
+      }
 
       logger.info(
-        `Alert sent for ${swapData.type} of ${token.tokenSymbol} in group ${token.group.telegramId}`
+        `Alert sent for ${swapData.type} of ${token.tokenSymbol} in group ${token.group.telegramId}${
+          isWhale ? ' [WHALE]' : ''
+        }`
       );
     } catch (error) {
       logger.error('Error sending alert:', error);

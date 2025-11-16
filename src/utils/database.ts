@@ -15,15 +15,15 @@ export function getPrismaClient(): PrismaClient {
         { level: 'warn', emit: 'event' },
         { level: 'error', emit: 'event' },
       ],
-    });
+    }) as PrismaClient;
 
     // Log warnings
-    prisma.$on('warn', (e) => {
+    (prisma.$on as any)('warn', (e: any) => {
       logger.warn('Prisma warning:', e);
     });
 
     // Log errors
-    prisma.$on('error', (e) => {
+    (prisma.$on as any)('error', (e: any) => {
       logger.error('Prisma error:', e);
     });
 

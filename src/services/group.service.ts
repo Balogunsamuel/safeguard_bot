@@ -20,6 +20,7 @@ export class GroupService {
           type: chat.type,
           isActive: true,
         },
+        include: { trackedTokens: true },
       });
 
       logger.debug(`Group upserted: ${group.id} (${chat.title})`);

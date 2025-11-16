@@ -1,8 +1,14 @@
+// @ts-ignore - Solana web3.js types not available
 import { Connection, PublicKey, ParsedTransactionWithMeta } from '@solana/web3.js';
 import config from '../config';
 import logger from '../utils/logger';
 import tokenService from '../services/token.service';
 import transactionService from '../services/transaction.service';
+import priceService from '../services/price.service';
+import emojiService from '../services/emoji.service';
+import mevService from '../services/mev.service';
+import buttonService from '../services/button.service';
+import mediaService from '../services/media.service';
 import bot from '../bot';
 import * as messages from '../templates/messages';
 
@@ -79,6 +85,13 @@ export class SolanaWorker {
 
       for (const sigInfo of signatures) {
         try {
+          // Check if this transaction was already processed
+          const existingTx = await transactionService.getTransactionByHash('solana', sigInfo.signature);
+          if (existingTx) {
+            // Skip already processed transactions
+            continue;
+          }
+
           // Parse the transaction
           const tx = await this.connection.getParsedTransaction(sigInfo.signature, {
             maxSupportedTransactionVersion: 0,
@@ -90,6 +103,15 @@ export class SolanaWorker {
           const swapData = await this.parseSwapTransaction(tx, token);
 
           if (swapData) {
+            // Get USD price - pass token amount for accurate pricing
+            const priceUsd = await priceService.getTokenPriceUsd(
+              token.tokenAddress,
+              'solana',
+              swapData.amountNative,
+              'SOL',
+              swapData.amountToken
+            );
+
             // Record transaction
             const transaction = await transactionService.recordTransaction({
               tokenId: token.id,
@@ -99,15 +121,30 @@ export class SolanaWorker {
               type: swapData.type,
               amountToken: swapData.amountToken,
               amountNative: swapData.amountNative,
-              priceUsd: swapData.priceUsd,
+              priceUsd: priceUsd,
               timestamp: new Date(sigInfo.blockTime! * 1000),
               blockNumber: BigInt(sigInfo.slot),
             });
 
-            // Check if above threshold
-            if (swapData.amountToken >= token.minAmount) {
+            // TEMPORARY: Only alert on BUYS, skip sells
+            if (swapData.type === 'sell') {
+              logger.debug(`Skipping sell alert for ${token.tokenSymbol} (sell alerts disabled)`);
+              continue;
+            }
+
+            // Check if above threshold (token amount OR USD value)
+            const meetsTokenThreshold = token.minAmount > 0 && swapData.amountToken >= token.minAmount;
+            const meetsUsdThreshold = token.minAmountUsd > 0 && priceUsd !== null && priceUsd !== undefined && priceUsd >= token.minAmountUsd;
+
+            // Alert if either threshold is met (or if both are 0, alert everything)
+            const shouldAlert =
+              (token.minAmount === 0 && token.minAmountUsd === 0) ||
+              meetsTokenThreshold ||
+              meetsUsdThreshold;
+
+            if (shouldAlert) {
               // Send alert to group
-              await this.sendAlert(token, swapData, sigInfo.signature);
+              await this.sendAlert(token, { ...swapData, priceUsd }, sigInfo.signature);
               await transactionService.markAlertSent(transaction.id);
             }
           }
@@ -150,28 +187,24 @@ export class SolanaWorker {
       // Get the wallet that initiated the transaction
       const walletAddress = accountKeys[0].pubkey.toString();
 
-      // Example: Look for token balance changes
+      // Look for token balance changes
       const preBalances = tx.meta.preTokenBalances || [];
       const postBalances = tx.meta.postTokenBalances || [];
 
       // Find balance changes for our token
       let tokenChange = 0;
-      let solChange = 0;
+      let tokenAccountIndex = -1;
 
       for (const post of postBalances) {
-        const pre = preBalances.find((p) => p.accountIndex === post.accountIndex);
+        const pre = preBalances.find((p: any) => p.accountIndex === post.accountIndex);
 
         if (post.mint === token.tokenAddress) {
           const postAmount = parseFloat(post.uiTokenAmount.uiAmountString || '0');
           const preAmount = pre ? parseFloat(pre.uiTokenAmount.uiAmountString || '0') : 0;
           tokenChange = postAmount - preAmount;
+          tokenAccountIndex = post.accountIndex;
+          break;
         }
-      }
-
-      // Check SOL balance changes
-      if (tx.meta.preBalances && tx.meta.postBalances) {
-        solChange =
-          (tx.meta.postBalances[0] - tx.meta.preBalances[0]) / 1_000_000_000; // Convert lamports to SOL
       }
 
       if (tokenChange === 0) return null;
@@ -179,12 +212,48 @@ export class SolanaWorker {
       // Determine if it's a buy or sell
       const type = tokenChange > 0 ? 'buy' : 'sell';
 
+      // Calculate SOL change based on the swap direction
+      // For buys: User spent SOL, so SOL balance decreased
+      // For sells: User received SOL, so SOL balance increased
+      let solChange = 0;
+
+      if (tx.meta.preBalances && tx.meta.postBalances) {
+        // Find the largest SOL balance change (this is likely the swap amount)
+        // Exclude index 0 (fee payer) and look for the actual swap amounts
+        let maxSolChange = 0;
+
+        for (let i = 0; i < tx.meta.preBalances.length; i++) {
+          const change = Math.abs(
+            (tx.meta.postBalances[i] - tx.meta.preBalances[i]) / 1_000_000_000
+          );
+          // Ignore tiny changes (< 0.0001 SOL) which are likely fees
+          if (change > 0.0001 && change > maxSolChange) {
+            maxSolChange = change;
+            solChange = change;
+          }
+        }
+
+        // If no significant SOL change found, try to estimate from token value
+        // This is a fallback for wrapped SOL or complex swaps
+        if (solChange === 0) {
+          // Use a rough estimate: Check total lamports sent in instructions
+          const totalChange = Math.abs(
+            (tx.meta.postBalances[0] - tx.meta.preBalances[0]) / 1_000_000_000
+          );
+          solChange = totalChange > 0.0001 ? totalChange : 0.01; // Minimum 0.01 SOL
+        }
+      }
+
+      logger.debug(
+        `Solana swap parsed: ${Math.abs(tokenChange)} ${token.tokenSymbol} ↔ ${solChange} SOL (${type})`
+      );
+
       return {
         walletAddress,
         type,
         amountToken: Math.abs(tokenChange),
-        amountNative: Math.abs(solChange),
-        priceUsd: undefined, // Would need price oracle integration
+        amountNative: solChange,
+        priceUsd: undefined, // Will be calculated by price service
       };
     } catch (error) {
       logger.error('Error parsing swap transaction:', error);
@@ -207,37 +276,92 @@ export class SolanaWorker {
     txHash: string
   ) {
     try {
+      // Check MEV blacklist
+      const isBlacklisted = await mevService.isBlacklisted(swapData.walletAddress, 'solana');
+      if (isBlacklisted) {
+        logger.debug(`Skipping alert for blacklisted wallet: ${swapData.walletAddress}`);
+        return;
+      }
+
+      const priceUsd = swapData.priceUsd || 0;
+
+      // Get emoji for this transaction
+      const emoji = await emojiService.getEmojiForValue(token.id, priceUsd);
+
+      // Check if whale
+      const isWhale = token.whaleThresholdUsd > 0 && priceUsd >= token.whaleThresholdUsd;
+
+      // Get custom buttons
+      const customButtons = await buttonService.getCustomButtons(token.id);
+      const replyMarkup = buttonService.formatTelegramButtons(customButtons);
+
+      // Get custom media
+      const media = await mediaService.getMedia(token.id);
+
+      const messageData = {
+        tokenSymbol: token.tokenSymbol,
+        walletAddress: swapData.walletAddress,
+        amountToken: swapData.amountToken,
+        amountNative: swapData.amountNative,
+        nativeSymbol: 'SOL',
+        priceUsd: swapData.priceUsd,
+        txHash,
+        chain: 'solana',
+        timestamp: new Date(),
+        emoji: swapData.type === 'buy' ? emoji : undefined,
+        isWhale: swapData.type === 'buy' ? isWhale : undefined,
+      };
+
       const message =
         swapData.type === 'buy'
-          ? messages.buyAlert({
-              tokenSymbol: token.tokenSymbol,
-              walletAddress: swapData.walletAddress,
-              amountToken: swapData.amountToken,
-              amountNative: swapData.amountNative,
-              nativeSymbol: 'SOL',
-              priceUsd: swapData.priceUsd,
-              txHash,
-              chain: 'solana',
-              timestamp: new Date(),
-            })
-          : messages.sellAlert({
-              tokenSymbol: token.tokenSymbol,
-              walletAddress: swapData.walletAddress,
-              amountToken: swapData.amountToken,
-              amountNative: swapData.amountNative,
-              nativeSymbol: 'SOL',
-              priceUsd: swapData.priceUsd,
-              txHash,
-              chain: 'solana',
-              timestamp: new Date(),
-            });
+          ? messages.buyAlert(messageData as any)
+          : messages.sellAlert(messageData);
 
-      await bot.telegram.sendMessage(Number(token.group.telegramId), message, {
-        parse_mode: 'Markdown',
-      });
+      // Send with media if available
+      if (media && swapData.type === 'buy') {
+        if (media.type === 'gif') {
+          await bot.telegram.sendAnimation(
+            Number(token.group.telegramId),
+            media.url,
+            {
+              caption: message,
+              parse_mode: 'Markdown',
+              reply_markup: replyMarkup,
+            }
+          );
+        } else if (media.type === 'image') {
+          await bot.telegram.sendPhoto(
+            Number(token.group.telegramId),
+            media.url,
+            {
+              caption: message,
+              parse_mode: 'Markdown',
+              reply_markup: replyMarkup,
+            }
+          );
+        } else if (media.type === 'video') {
+          await bot.telegram.sendVideo(
+            Number(token.group.telegramId),
+            media.url,
+            {
+              caption: message,
+              parse_mode: 'Markdown',
+              reply_markup: replyMarkup,
+            }
+          );
+        }
+      } else {
+        // Send regular message
+        await bot.telegram.sendMessage(Number(token.group.telegramId), message, {
+          parse_mode: 'Markdown',
+          reply_markup: replyMarkup,
+        });
+      }
 
       logger.info(
-        `Alert sent for ${swapData.type} of ${token.tokenSymbol} in group ${token.group.telegramId}`
+        `Alert sent for ${swapData.type} of ${token.tokenSymbol} in group ${token.group.telegramId}${
+          isWhale ? ' [WHALE]' : ''
+        }`
       );
     } catch (error) {
       logger.error('Error sending alert:', error);

@@ -11,20 +11,50 @@ import {
  * Welcome message when bot is added to a group
  */
 export const welcomeMessage = (groupName: string) => `
-🛡️ **Safeguard Bot Activated**
+🛡️ **Multi-Chain Buy Bot Activated**
 
-Hello ${groupName}! I'm here to protect your community and track token activity.
+Hello ${groupName}! I'm your advanced token tracker with next-gen features.
 
 **Features:**
-✅ User verification system
-📊 Real-time buy/sell tracking
-📈 Trading analytics
-🔔 Custom alerts
+✅ Multi-chain support (Ethereum, BSC, Solana)
+✅ Real-time buy/sell alerts with USD values
+✅ Dynamic emoji system (🐟 → 🐋)
+✅ Whale alerts for large buys
+✅ MEV bot filtering (auto-blocks spam)
+✅ Buy competitions with leaderboards
+✅ Custom buttons, media, and branding
+✅ Trending tokens tracker
 
 **Getting Started:**
-Admins can use /help to see all available commands.
+• Users: Type /help to see available commands
+• Admins: Type /help to see full admin command list
 
-Let's keep this community safe! 🚀
+Let's track some buys! 🚀
+`;
+
+/**
+ * Welcome message for new members
+ */
+export const newMemberWelcome = (firstName: string, groupName: string) => `
+👋 **Welcome to ${groupName}, ${firstName}!**
+
+We're excited to have you here! This group is powered by our advanced Multi-Chain Buy Bot.
+
+**What you can do:**
+📊 Track real-time buy/sell alerts
+🔥 View trending tokens with \`/trending\`
+🏆 Check competition leaderboards with \`/competition leaderboard\`
+📋 See tracked tokens with \`/listtokens\`
+💡 Get help anytime with \`/help\`
+
+**What makes us special:**
+✅ Multi-chain support (Ethereum, BSC, Solana)
+✅ Dynamic emoji system (🐟 → 🐋)
+✅ Whale alerts for big buys
+✅ MEV bot filtering (no spam!)
+✅ Buy competitions with prizes
+
+Let's get started! 🚀
 `;
 
 /**
@@ -60,11 +90,14 @@ export const buyAlert = (data: {
   txHash: string;
   chain: string;
   timestamp: Date;
+  emoji?: string;
+  isWhale?: boolean;
 }) => {
-  const explorerUrl = getExplorerUrl(data.chain, data.txHash);
+  const emojiPrefix = data.emoji || '💰';
+  const whaleIndicator = data.isWhale ? '🐋 **WHALE ALERT** 🐋\n\n' : '';
 
   return `
-💰 **New Buy Alert!**
+${whaleIndicator}${emojiPrefix} **New Buy Alert!**
 
 **Token:** $${data.tokenSymbol}
 **Amount:** ${formatNumber(data.amountToken, 4)} ${data.tokenSymbol}
@@ -74,7 +107,7 @@ export const buyAlert = (data: {
 **Wallet:** \`${shortenAddress(data.walletAddress)}\`
 **Time:** ${formatTimestamp(data.timestamp)}
 
-🔗 [View Transaction](${explorerUrl})
+[View TX](${getExplorerUrl(data.chain, data.txHash)})
 `;
 };
 
@@ -91,11 +124,12 @@ export const sellAlert = (data: {
   txHash: string;
   chain: string;
   timestamp: Date;
+  emoji?: string;
 }) => {
-  const explorerUrl = getExplorerUrl(data.chain, data.txHash);
+  const emojiPrefix = data.emoji || '📉';
 
   return `
-📉 **New Sell Alert**
+${emojiPrefix} **New Sell Alert**
 
 **Token:** $${data.tokenSymbol}
 **Amount:** ${formatNumber(data.amountToken, 4)} ${data.tokenSymbol}
@@ -105,7 +139,7 @@ export const sellAlert = (data: {
 **Wallet:** \`${shortenAddress(data.walletAddress)}\`
 **Time:** ${formatTimestamp(data.timestamp)}
 
-🔗 [View Transaction](${explorerUrl})
+[View TX](${getExplorerUrl(data.chain, data.txHash)})
 `;
 };
 
@@ -164,19 +198,28 @@ $${tokenSymbol} is no longer being tracked.
  * Help message for users
  */
 export const helpMessage = () => `
-🛡️ **Safeguard Bot - Help**
+🛡️ **Multi-Chain Buy Bot - Help**
 
-**User Commands:**
-/start - Start the bot
-/help - Show this help message
-/stats - View group statistics
+**Public Commands:**
+\`/start\` - Start the bot
+\`/help\` - Show this help message
+\`/trending [limit]\` - View trending tokens
+\`/competition leaderboard\` - View competition rankings
+\`/listtokens\` - List all tracked tokens
+\`/groupstats\` - View group statistics
+
+**Features:**
+✅ Multi-chain support (Ethereum, BSC, Solana)
+✅ Real-time buy/sell alerts with USD values
+✅ Dynamic emoji system (🐟 → 🐋)
+✅ Whale alerts for large buys
+✅ MEV bot filtering (auto-blocks spam)
+✅ Buy competitions with leaderboards
+✅ Custom buttons, media, and branding
+✅ Trending tokens tracker
 
 **Admin Commands:**
-/addtoken - Add a token to track
-/removetoken - Remove a tracked token
-/listTokens - List all tracked tokens
-/setThreshold - Set minimum alert amount
-/dailystats - View 24h statistics
+Admins can type \`/help\` in a private message for full admin command list.
 
 **Need Support?**
 Contact the group admins for assistance.
@@ -195,16 +238,53 @@ Example: \`/addtoken solana EPjFWdd5A...xyYm USDC USD Coin\`
 \`/removetoken <symbol>\`
 Example: \`/removetoken USDC\`
 
-\`/setthreshold <symbol> <amount>\`
-Example: \`/setthreshold PEPE 1000000\`
-
 \`/listtokens\` - Show all tracked tokens
 
-**Statistics:**
-\`/dailystats <symbol>\` - 24h stats for a token
-\`/groupstats\` - Group overview
+**Alert Thresholds:**
+\`/setminusd <symbol> <usd_amount>\` - Set minimum USD for alerts
+Example: \`/setminusd BONK 50\`
 
-**Note:** Only group admins can use these commands.
+\`/setwhale <symbol> <usd_amount>\` - Set whale alert threshold
+Example: \`/setwhale BONK 5000\`
+
+\`/setthreshold <symbol> <amount>\` - Set minimum token amount (legacy)
+
+**Customization:**
+\`/setbuttons <symbol> <text> <url> [...]\` - Set all custom buttons at once (max 3)
+Example: \`/setbuttons BONK "Buy" https://raydium.io "Chart" https://dexscreener.com\`
+
+\`/addbutton <symbol> <text> <url>\` - Add a single button without replacing existing ones
+Example: \`/addbutton BONK "Buy" https://raydium.io\`
+
+\`/clearbuttons <symbol>\` - Remove all custom buttons
+
+\`/setemoji <symbol> [default]\` - Enable dynamic emoji tiers
+Example: \`/setemoji BONK default\`
+
+\`/clearemoji <symbol>\` - Disable emoji tiers
+
+\`/setmedia <symbol> <gif|image|video> <url>\` - Add custom media
+Example: \`/setmedia BONK gif https://giphy.com/celebrate.gif\`
+
+\`/clearmedia <symbol>\` - Remove custom media
+
+**MEV Bot Blacklist:**
+\`/blacklist add <address> [reason]\` - Add wallet to blacklist
+\`/blacklist remove <address>\` - Remove from blacklist
+\`/blacklist list [chain]\` - View blacklist
+
+**Competitions:**
+\`/competition start <name> [hours] [prize]\` - Start buy competition
+Example: \`/competition start "Weekend Rally" 48 "1 SOL"\`
+
+\`/competition stop\` - End current competition
+\`/competition leaderboard [limit]\` - View rankings
+
+**Statistics:**
+\`/groupstats\` - Group overview
+\`/trending [limit]\` - View trending tokens
+
+**Note:** Only group admins can use admin commands.
 `;
 
 /**
@@ -216,6 +296,7 @@ export const tokenListMessage = (
     tokenAddress: string;
     chain: string;
     minAmount: number;
+    minAmountUsd: number;
   }>
 ) => {
   if (tokens.length === 0) {
@@ -227,7 +308,14 @@ export const tokenListMessage = (
   tokens.forEach((token, index) => {
     message += `${index + 1}. **$${token.tokenSymbol}** (${token.chain.toUpperCase()})\n`;
     message += `   Address: \`${shortenAddress(token.tokenAddress, 6)}\`\n`;
-    message += `   Min Alert: ${formatLargeNumber(token.minAmount)} tokens\n\n`;
+
+    if (token.minAmountUsd > 0) {
+      message += `   Min Alert: $${token.minAmountUsd.toFixed(2)} USD\n\n`;
+    } else if (token.minAmount > 0) {
+      message += `   Min Alert: ${formatLargeNumber(token.minAmount)} tokens\n\n`;
+    } else {
+      message += `   Min Alert: Not set (all transactions)\n\n`;
+    }
   });
 
   return message;

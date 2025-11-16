@@ -45,12 +45,11 @@ export class TokenService {
    */
   async removeTrackedToken(tokenId: string) {
     try {
-      await prisma.trackedToken.update({
+      await prisma.trackedToken.delete({
         where: { id: tokenId },
-        data: { isActive: false },
       });
 
-      logger.info(`Token ${tokenId} deactivated`);
+      logger.info(`Token ${tokenId} deleted`);
     } catch (error) {
       logger.error('Error removing tracked token:', error);
       throw error;
@@ -98,6 +97,21 @@ export class TokenService {
       });
     } catch (error) {
       logger.error('Error updating token min amount:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Update token minimum USD alert threshold
+   */
+  async updateMinAmountUsd(tokenId: string, minAmountUsd: number) {
+    try {
+      return await prisma.trackedToken.update({
+        where: { id: tokenId },
+        data: { minAmountUsd },
+      });
+    } catch (error) {
+      logger.error('Error updating token min amount USD:', error);
       throw error;
     }
   }

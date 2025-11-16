@@ -73,14 +73,25 @@ model TrackedToken {
   tokenSymbol     String
   tokenName       String?
   pairAddress     String?  // DEX pair address
-  minAmount       Float    @default(0) // Minimum amount to trigger alert
+  minAmount       Float    @default(0) // Minimum token amount to trigger alert (deprecated)
+  minAmountUsd    Float    @default(0) // Minimum USD value to trigger alert
+  whaleThresholdUsd Float  @default(0) // Whale alert threshold in USD
   isActive        Boolean  @default(true)
+
+  // Custom media for alerts
+  mediaType       String?  // 'gif', 'image', 'video'
+  mediaUrl        String?  // URL or file ID for custom media
+
+  // Custom inline buttons (stored as JSON)
+  customButtons   String?  // JSON array of button config: [{text: string, url: string}]
+
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
   // Relations
   group        Group         @relation(fields: [groupId], references: [id], onDelete: Cascade)
   transactions Transaction[]
+  emojiTiers   EmojiTier[]
 
   @@unique([groupId, chain, tokenAddress])
   @@index([chain, tokenAddress])
@@ -158,4 +169,77 @@ model Config {
   updatedAt DateTime @updatedAt
 
   @@map("config")
+}
+
+// Emoji tiers for dynamic emoji system
+model EmojiTier {
+  id          String   @id @default(cuid())
+  tokenId     String
+  minUsd      Float    // Minimum USD value for this tier
+  maxUsd      Float?   // Maximum USD value for this tier (null = infinity)
+  emoji       String   // Emoji to display
+  label       String?  // Optional label (e.g., "Small", "Medium", "Whale")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  token TrackedToken @relation(fields: [tokenId], references: [id], onDelete: Cascade)
+
+  @@index([tokenId])
+  @@map("emoji_tiers")
+}
+
+// MEV bot blacklist
+model MevBlacklist {
+  id            String   @id @default(cuid())
+  walletAddress String   @unique
+  chain         String   // 'solana', 'ethereum', 'bsc', 'all'
+  reason        String?  // Why this wallet is blacklisted
+  addedBy       String?  // Admin who added it
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([walletAddress])
+  @@index([chain])
+  @@map("mev_blacklist")
+}
+
+// Buy competitions
+model Competition {
+  id              String   @id @default(cuid())
+  groupId         String
+  tokenId         String?  // Optional: specific token or all tokens
+  name            String
+  description     String?
+  startTime       DateTime
+  endTime         DateTime
+  isActive        Boolean  @default(true)
+  winnerId        String?  // Winner wallet address
+  prizeInfo       String?  // Prize description
+  pinnedMessageId Int?     // Telegram message ID of pinned leaderboard
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([groupId])
+  @@index([isActive])
+  @@map("competitions")
+}
+
+// Trending tokens cache
+model TrendingToken {
+  id           String   @id @default(cuid())
+  chain        String
+  tokenAddress String
+  tokenSymbol  String
+  rank         Int
+  buyCount1h   Int      // Buys in last hour
+  volumeUsd1h  Float    // Volume in last hour
+  score        Float    // Trending score
+  timestamp    DateTime @default(now())
+
+  @@unique([chain, tokenAddress, timestamp])
+  @@index([timestamp])
+  @@index([rank])
+  @@map("trending_tokens")
 }

@@ -60,9 +60,43 @@ export class TransactionService {
       await this.updateDailyStats(data);
 
       return transaction;
-    } catch (error) {
+    } catch (error: any) {
+      // Handle duplicate transaction error (race condition)
+      if (error.code === 'P2002') {
+        // Prisma unique constraint violation
+        logger.debug(`Transaction ${data.txHash} already exists (race condition)`);
+        const existing = await prisma.transaction.findUnique({
+          where: {
+            chain_txHash: {
+              chain: data.chain,
+              txHash: data.txHash,
+            },
+          },
+        });
+        return existing!;
+      }
+
       logger.error('Error recording transaction:', error);
       throw error;
+    }
+  }
+
+  /**
+   * Get transaction by hash
+   */
+  async getTransactionByHash(chain: string, txHash: string) {
+    try {
+      return await prisma.transaction.findUnique({
+        where: {
+          chain_txHash: {
+            chain,
+            txHash,
+          },
+        },
+      });
+    } catch (error) {
+      logger.error('Error getting transaction by hash:', error);
+      return null;
     }
   }
 
