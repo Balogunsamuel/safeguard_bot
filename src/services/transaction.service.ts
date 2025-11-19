@@ -20,7 +20,7 @@ export class TransactionService {
    */
   async recordTransaction(data: TransactionData) {
     try {
-      // Check if transaction already exists
+      // Check if transaction already exists first
       const existing = await prisma.transaction.findUnique({
         where: {
           chain_txHash: {
@@ -31,13 +31,22 @@ export class TransactionService {
       });
 
       if (existing) {
-        logger.debug(`Transaction ${data.txHash} already recorded`);
+        logger.debug(`Transaction ${data.txHash} already recorded, skipping`);
         return existing;
       }
 
-      // Create new transaction
-      const transaction = await prisma.transaction.create({
-        data: {
+      // Use upsert to handle race conditions atomically
+      const transaction = await prisma.transaction.upsert({
+        where: {
+          chain_txHash: {
+            chain: data.chain,
+            txHash: data.txHash,
+          },
+        },
+        update: {
+          // If somehow it exists now (race condition), don't change anything
+        },
+        create: {
           tokenId: data.tokenId,
           txHash: data.txHash,
           chain: data.chain,
@@ -52,30 +61,18 @@ export class TransactionService {
         },
       });
 
-      logger.info(
-        `Transaction recorded: ${data.type} ${data.amountToken} tokens (${data.txHash})`
-      );
+      // If we got here and didn't have an existing record, it's a new transaction
+      if (!existing) {
+        logger.info(
+          `Transaction recorded: ${data.type} ${data.amountToken} tokens (${data.txHash})`
+        );
 
-      // Update daily stats
-      await this.updateDailyStats(data);
+        // Update daily stats only for new transactions
+        await this.updateDailyStats(data);
+      }
 
       return transaction;
     } catch (error: any) {
-      // Handle duplicate transaction error (race condition)
-      if (error.code === 'P2002') {
-        // Prisma unique constraint violation
-        logger.debug(`Transaction ${data.txHash} already exists (race condition)`);
-        const existing = await prisma.transaction.findUnique({
-          where: {
-            chain_txHash: {
-              chain: data.chain,
-              txHash: data.txHash,
-            },
-          },
-        });
-        return existing!;
-      }
-
       logger.error('Error recording transaction:', error);
       throw error;
     }
