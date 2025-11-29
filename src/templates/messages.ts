@@ -230,62 +230,128 @@ Contact the group admins for assistance.
  * Admin help message
  */
 export const adminHelpMessage = () => `
-🔧 **Admin Commands**
+🔧 **Admin Console (tap a button)**
 
-**Token Management:**
+Pick what you want to do and we’ll show the exact steps/commands.
+Use this in DM for the full interactive experience.
+`;
+
+export const adminHelpKeyboard = () => ({
+  inline_keyboard: [
+    [
+      { text: '➕ Add Token', callback_data: 'help_addtoken' },
+      { text: '📋 List Tokens', callback_data: 'help_listtokens' },
+    ],
+    [
+      { text: '💵 Alert Thresholds', callback_data: 'help_thresholds' },
+      { text: '🐳 Whale Alerts', callback_data: 'help_whale' },
+    ],
+    [
+      { text: '🔘 Custom Buttons', callback_data: 'help_buttons' },
+      { text: '🖼 Media', callback_data: 'help_media' },
+    ],
+    [
+      { text: '😀 Emoji Tiers', callback_data: 'help_emoji' },
+      { text: '⚙️ Portal', callback_data: 'help_portal' },
+    ],
+    [
+      { text: '🚫 MEV Blacklist', callback_data: 'help_blacklist' },
+      { text: '🏆 Competitions', callback_data: 'help_competitions' },
+    ],
+    [{ text: '📊 Stats / Trending', callback_data: 'help_stats' }],
+  ],
+});
+
+export const adminHelpAddToken = () => `
+➕ **Add a token to track**
 \`/addtoken <chain> <address> <symbol> [name]\`
-Example: \`/addtoken solana EPjFWdd5A...xyYm USDC USD Coin\`
+Example:
+\`/addtoken solana EPjFWdd5A...xyYm USDC "USD Coin"\`
 
-\`/removetoken <symbol>\`
-Example: \`/removetoken USDC\`
+Tip: Use \`/listtokens\` to confirm it’s added.
+`;
 
-\`/listtokens\` - Show all tracked tokens
+export const adminHelpListTokens = () => `
+📋 **Show tracked tokens**
+\`/listtokens\`
+`;
 
-**Alert Thresholds:**
-\`/setminusd <symbol> <usd_amount>\` - Set minimum USD for alerts
+export const adminHelpThresholds = () => `
+💵 **Minimum USD alert**
+\`/setminusd <symbol> <usd_amount>\`
 Example: \`/setminusd BONK 50\`
 
-\`/setwhale <symbol> <usd_amount>\` - Set whale alert threshold
+Legacy token amount:
+\`/setthreshold <symbol> <amount>\`
+`;
+
+export const adminHelpWhale = () => `
+🐳 **Whale alert threshold**
+\`/setwhale <symbol> <usd_amount>\`
 Example: \`/setwhale BONK 5000\`
+`;
 
-\`/setthreshold <symbol> <amount>\` - Set minimum token amount (legacy)
+export const adminHelpButtons = () => `
+🔘 **Custom buttons (max 3)**
+Set all at once:
+\`/setbuttons <symbol> <text> <url> [<text> <url> ...]\`
+Example:
+\`/setbuttons BONK "Buy" https://raydium.io "Chart" https://dexscreener.com\`
 
-**Customization:**
-\`/setbuttons <symbol> <text> <url> [...]\` - Set all custom buttons at once (max 3)
-Example: \`/setbuttons BONK "Buy" https://raydium.io "Chart" https://dexscreener.com\`
-
-\`/addbutton <symbol> <text> <url>\` - Add a single button without replacing existing ones
+Add one without replacing:
+\`/addbutton <symbol> <text> <url>\`
 Example: \`/addbutton BONK "Buy" https://raydium.io\`
 
-\`/clearbuttons <symbol>\` - Remove all custom buttons
+Clear all:
+\`/clearbuttons <symbol>\`
+`;
 
-\`/setemoji <symbol> [default]\` - Enable dynamic emoji tiers
-Example: \`/setemoji BONK default\`
+export const adminHelpMedia = () => `
+🖼 **Attach media to alerts**
+\`/setmedia <symbol> <gif|image|video> <url>\`
+Example:
+\`/setmedia BONK gif https://giphy.com/celebrate.gif\`
 
-\`/clearemoji <symbol>\` - Disable emoji tiers
+Remove media:
+\`/clearmedia <symbol>\`
+`;
 
-\`/setmedia <symbol> <gif|image|video> <url>\` - Add custom media
-Example: \`/setmedia BONK gif https://giphy.com/celebrate.gif\`
+export const adminHelpEmoji = () => `
+😀 **Emoji tiers**
+Enable defaults:
+\`/setemoji <symbol> default\`
 
-\`/clearmedia <symbol>\` - Remove custom media
+Disable:
+\`/clearemoji <symbol>\`
+`;
 
-**MEV Bot Blacklist:**
-\`/blacklist add <address> [reason]\` - Add wallet to blacklist
-\`/blacklist remove <address>\` - Remove from blacklist
-\`/blacklist list [chain]\` - View blacklist
+export const adminHelpPortal = () => `
+⚙️ **Portal / Verification**
+Start Safeguard wizard in DM:
+\`/setup\`
 
-**Competitions:**
-\`/competition start <name> [hours] [prize]\` - Start buy competition
-Example: \`/competition start "Weekend Rally" 48 "1 SOL"\`
+Stats:
+\`/portalstats\`
+`;
 
-\`/competition stop\` - End current competition
-\`/competition leaderboard [limit]\` - View rankings
+export const adminHelpBlacklist = () => `
+🚫 **MEV blacklist**
+Add: \`/blacklist add <address> [reason]\`
+Remove: \`/blacklist remove <address>\`
+List: \`/blacklist list [chain]\`
+`;
 
-**Statistics:**
+export const adminHelpCompetitions = () => `
+🏆 **Buy competitions**
+Start: \`/competition start <name> [hours] [prize]\`
+Stop: \`/competition stop\`
+Leaderboard: \`/competition leaderboard [limit]\`
+`;
+
+export const adminHelpStats = () => `
+📊 **Stats**
 \`/groupstats\` - Group overview
-\`/trending [limit]\` - View trending tokens
-
-**Note:** Only group admins can use admin commands.
+\`/trending [limit]\` - Trending tokens
 `;
 
 /**

@@ -30,6 +30,7 @@ import * as portalHandlers from './handlers/portal.handlers';
 import * as portalEvents from './handlers/portal.events';
 import * as setupWizard from './handlers/setup.wizard';
 import * as startHandler from './handlers/start.handler';
+import helpHandler from './handlers/help.handler';
 
 // Initialize bot
 const bot = new Telegraf(config.telegram.token);
@@ -153,7 +154,10 @@ bot.command('help', async (ctx) => {
   try {
     const isAdminUser = await isAdmin(ctx);
     if (isAdminUser) {
-      await ctx.reply(messages.adminHelpMessage(), { parse_mode: 'Markdown' });
+      await ctx.reply(messages.adminHelpMessage(), {
+        parse_mode: 'Markdown',
+        reply_markup: messages.adminHelpKeyboard(),
+      });
     } else {
       await ctx.reply(messages.helpMessage(), { parse_mode: 'Markdown' });
     }
@@ -237,7 +241,15 @@ bot.action(/verify:(\d+)/, async (ctx) => {
     await groupService.verifyUser(user.id, group.id);
 
     await ctx.answerCbQuery('✅ Verified successfully!');
-    await ctx.editMessageText(messages.verificationSuccess(), { parse_mode: 'Markdown' });
+    try {
+      await ctx.editMessageText(messages.verificationSuccess(), { parse_mode: 'Markdown' });
+    } catch (err: any) {
+      // Ignore "message is not modified" errors from Telegram
+      const desc = err?.description || err?.message || '';
+      if (!desc.includes('message is not modified')) {
+        throw err;
+      }
+    }
 
     logger.info(`User ${ctx.from.id} verified in group ${ctx.chat.id}`);
   } catch (error) {
@@ -1246,9 +1258,9 @@ bot.on('new_chat_members', portalEvents.handleNewChatMembers);
 bot.on('text', setupWizard.handleSetupTextInput);
 
 /**
- * Handle channel shared (request_chat button response)
+ * Handle shared chats (group/channel picker response)
  */
-bot.on(message('chat_shared'), setupWizard.handleChannelShared);
+bot.on(message('chat_shared'), setupWizard.handleChatShared);
 
 /**
  * Handle all messages (setup wizard input, spam/scam filtering + trust tracking)
@@ -1274,6 +1286,16 @@ bot.action(/^verify_/, portalEvents.handleVerifyCallback);
  * Handle answer callback
  */
 bot.action(/^answer_/, portalEvents.handleAnswerCallback);
+
+/**
+ * Handle admin help menu callbacks
+ */
+bot.action(/^help_/, helpHandler.handleAdminHelpAction);
+
+/**
+ * Handle "I am human" verification tap (non-premium)
+ */
+bot.action(/^human_/, startHandler.handleHumanVerification);
 
 /**
  * Error handler

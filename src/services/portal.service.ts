@@ -26,7 +26,11 @@ export interface PortalSetupConfig {
   mediaFileId?: string;
   mediaUrl?: string;
   buttons?: PortalButtonConfig[];
+  botUsername?: string;
 }
+
+const buildVerifyUrl = (botUsername: string, portalId: string) =>
+  `https://t.me/${botUsername}?start=verify_${portalId}`;
 
 class PortalService {
   /**
@@ -47,13 +51,39 @@ class PortalService {
             channelId: config.channelId,
             channelUsername: config.channelUsername,
             headerText: config.headerText || existing.headerText,
-            description: config.description || existing.description,
-            mediaType: config.mediaType || existing.mediaType,
-            mediaFileId: config.mediaFileId || existing.mediaFileId,
-            mediaUrl: config.mediaUrl || existing.mediaUrl,
-            updatedAt: new Date(),
-          },
-        });
+          description: config.description || existing.description,
+          mediaType: config.mediaType || existing.mediaType,
+          mediaFileId: config.mediaFileId || existing.mediaFileId,
+          mediaUrl: config.mediaUrl || existing.mediaUrl,
+          inviteLinkType: existing.inviteLinkType || 'one_time',
+          isActive: true,
+          updatedAt: new Date(),
+        },
+      });
+
+        // Ensure verify button is present and URL is correct
+        if (config.botUsername) {
+          const verifyBtn = await prisma.portalButton.findFirst({
+            where: { portalId: updated.id, isVerifyButton: true },
+          });
+          const verifyUrl = buildVerifyUrl(config.botUsername, updated.id);
+          if (verifyBtn) {
+            await prisma.portalButton.update({
+              where: { id: verifyBtn.id },
+              data: { url: verifyUrl, text: '✅ Verify to Join', order: 0 },
+            });
+          } else {
+            await prisma.portalButton.create({
+              data: {
+                portalId: updated.id,
+                text: '✅ Verify to Join',
+                url: verifyUrl,
+                order: 0,
+                isVerifyButton: true,
+              },
+            });
+          }
+        }
 
         logger.info(`Updated portal configuration for group ${config.groupId}`);
         return updated;
@@ -70,6 +100,8 @@ class PortalService {
           mediaType: config.mediaType,
           mediaFileId: config.mediaFileId,
           mediaUrl: config.mediaUrl,
+          inviteLinkType: 'one_time',
+          isActive: true,
         },
       });
 
@@ -78,7 +110,7 @@ class PortalService {
         data: {
           portalId: portal.id,
           text: '✅ Verify to Join',
-          url: `https://t.me/YOUR_BOT_USERNAME?start=verify_${portal.id}`,
+          url: config.botUsername ? buildVerifyUrl(config.botUsername, portal.id) : '',
           order: 0,
           isVerifyButton: true,
         },
@@ -169,9 +201,42 @@ class PortalService {
       }
 
       // Get group from database
-      const group = await prisma.group.findUnique({
+      let group = await prisma.group.findUnique({
         where: { id: groupId },
       });
+
+      // Backward compatibility: if groupId stored as telegramId string, try lookup by telegramId
+      if (!group) {
+        const tgId = BigInt(groupId);
+        group = await prisma.group.findUnique({
+          where: { telegramId: tgId },
+        });
+      }
+
+      // If still not found, try to fetch from Telegram and create minimal record
+      if (!group && ctx) {
+        try {
+          const chat = await ctx.telegram.getChat(Number(portal.groupId || groupId));
+          if (chat && (chat.type === 'group' || chat.type === 'supergroup')) {
+            group = await prisma.group.upsert({
+              where: { telegramId: BigInt(chat.id) },
+              update: {
+                title: 'title' in chat ? chat.title : undefined,
+                type: chat.type,
+                isActive: true,
+              },
+              create: {
+                telegramId: BigInt(chat.id),
+                title: 'title' in chat ? chat.title : 'Unknown group',
+                type: chat.type,
+                isActive: true,
+              },
+            });
+          }
+        } catch (err) {
+          logger.warn('Could not auto-create group during invite generation:', err);
+        }
+      }
 
       if (!group) {
         throw new Error('Group not found');
@@ -337,7 +402,7 @@ class PortalService {
       const caption = this.buildPortalMessage(portal);
 
       // Build inline keyboard
-      const keyboard = this.buildPortalKeyboard(portal);
+      const keyboard = this.buildPortalKeyboard(portal, ctx.botInfo?.username);
 
       // Update or send message
       try {
@@ -435,16 +500,27 @@ ${portal.description}
   /**
    * Build portal inline keyboard
    */
-  private buildPortalKeyboard(portal: any): any[][] {
+  private buildPortalKeyboard(portal: any, botUsername?: string): any[][] {
     const keyboard: any[][] = [];
 
     portal.buttons.forEach((button: any) => {
-      keyboard.push([
-        {
-          text: button.text,
-          url: button.url,
-        },
-      ]);
+      if (button.isVerifyButton) {
+        const fallbackUrl =
+          botUsername && portal.id ? `https://t.me/${botUsername}?start=verify_${portal.id}` : '';
+        keyboard.push([
+          {
+            text: button.text,
+            url: button.url || fallbackUrl,
+          },
+        ]);
+      } else {
+        keyboard.push([
+          {
+            text: button.text,
+            url: button.url,
+          },
+        ]);
+      }
     });
 
     return keyboard;

@@ -370,41 +370,23 @@ export async function handleVerifyCallback(ctx: Context) {
     if (!match) return;
 
     const portalId = match[1];
-    const userId = ctx.from!.id;
-    const isPremium = ctx.from!.is_premium || false;
+    const botUsername = ctx.botInfo?.username;
 
     await ctx.answerCbQuery();
 
-    // Create verification attempt
-    const attempt = await verificationService.createVerificationAttempt(
-      portalId,
-      BigInt(userId),
-      ctx.from!.username,
-      isPremium,
-      'medium' // Default to medium difficulty
-    );
-
-    // Get challenge
-    const challenge = await verificationService.getChallengeData(attempt.id);
-
-    if (!challenge) {
-      return ctx.reply('❌ Failed to generate challenge. Please try again.');
+    if (!botUsername) {
+      await ctx.reply('❌ Unable to start verification. Please DM the bot directly.');
+      return;
     }
 
-    // Show challenge to user
+    const deepLink = `https://t.me/${botUsername}?start=verify_${portalId}`;
     await ctx.reply(
-      `🔐 **Verification Challenge**\n\n${challenge.question}\n\n` +
-      `Select the correct answer:`,
+      '🔐 Tap below to verify in DM. Premium users get instant access; others tap "I am human" in DM to get the link.',
       {
-        parse_mode: 'Markdown',
         reply_markup: {
-          inline_keyboard: challenge.options.map((option) => [
-            {
-              text: option,
-              callback_data: `answer_${attempt.id}_${option}`,
-            },
-          ]),
+          inline_keyboard: [[{ text: '✅ Open bot to verify', url: deepLink }]],
         },
+        disable_web_page_preview: true,
       }
     );
   } catch (error) {
@@ -460,44 +442,31 @@ export async function handleAnswerCallback(ctx: Context) {
 
           const groupTitle = group?.title || 'the group';
 
-          // Send invite link via private message
+          // Send link in channel (reply) and PM as fallback
+          const linkMessage =
+            `✅ **Verification Successful!**\n\n` +
+            `Join **${groupTitle}** with this one-time link:\n` +
+            `${inviteLink.inviteLink}\n\n` +
+            `⚠️ Single use. Do not share.`;
+
           try {
-            await ctx.telegram.sendMessage(
-              userId,
-              `✅ **Verification Successful!**\n\n` +
-              `Congratulations! You've been verified and can now join **${groupTitle}**.\n\n` +
-              `🔗 **Your One-Time Invite Link:**\n` +
-              `${inviteLink.inviteLink}\n\n` +
-              `⚠️ **Important:**\n` +
-              `• This link can only be used once\n` +
-              `• It will expire after you join\n` +
-              `• Do not share this link with others\n\n` +
-              `Click the link above to join the group! Welcome! 🎉`,
-              { parse_mode: 'Markdown' }
-            );
-
-            logger.info(`Sent invite link to user ${userId} via PM`);
-
-            // Update the challenge message
-            await ctx.editMessageText(
-              `✅ **Verification Successful!**\n\n` +
-              `Check your private messages with me for your invite link!\n\n` +
-              `If you didn't receive it, make sure you've started a chat with me first.`,
-              { parse_mode: 'Markdown' }
-            );
-
-          } catch (pmError: any) {
-            logger.error(`Could not send PM to user ${userId}:`, pmError);
-
-            // If we can't PM them, show the link in the message
-            await ctx.editMessageText(
-              `✅ **Verification Successful!**\n\n` +
-              `Congratulations! Here's your one-time invite link:\n\n` +
-              `${inviteLink.inviteLink}\n\n` +
-              `⚠️ This link can only be used once. Click it to join **${groupTitle}**!`,
-              { parse_mode: 'Markdown' }
-            );
+            await ctx.reply(linkMessage, { parse_mode: 'Markdown' });
+          } catch (sendError) {
+            logger.warn('Could not send link in chat:', sendError);
           }
+
+          try {
+            await ctx.telegram.sendMessage(userId, linkMessage, { parse_mode: 'Markdown' });
+          } catch (pmError: any) {
+            logger.warn(`Could not PM user ${userId}:`, pmError);
+          }
+
+          // Update the challenge message to success
+          await ctx.editMessageText(
+            `✅ **Verification Successful!**\n\n` +
+            `Link posted above. If you missed it, request verification again.`,
+            { parse_mode: 'Markdown' }
+          );
 
         } catch (error: any) {
           logger.error('Error generating invite link for verified user:', error);

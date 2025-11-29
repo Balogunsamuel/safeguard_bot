@@ -9,6 +9,7 @@ import portalService from '../services/portal.service';
 import groupService from '../services/group.service';
 import tokenService from '../services/token.service';
 import logger from '../utils/logger';
+import prisma from '../utils/database';
 
 interface SetupWizardContext extends Context {
   session?: any;
@@ -93,44 +94,62 @@ async function showGroupSelection(ctx: SetupWizardContext) {
       return;
     }
 
-    // Get list of groups where user is admin
-    const userGroups = await getUserAdminGroups(ctx);
-
-    if (!userGroups || userGroups.length === 0) {
-      await ctx.reply(
-        '❌ No groups found.\n\n' +
-          '**Common reasons:**\n' +
-          '• I haven\'t been added to your groups yet\n' +
-          '• You need to be an admin in the group\n' +
-          '• The group hasn\'t been initialized\n\n' +
-          '**To fix this:**\n' +
-          '1. Make sure I\'m added to your group\n' +
-          '2. Make sure you\'re an admin\n' +
-          '3. Send any message in the group (I\'ll auto-register it)\n' +
-          '4. Then try `/setup` again\n\n' +
-          'Alternatively, use `/addtoken` in your group first to register it.',
-        { parse_mode: 'Markdown' }
-      );
-      return;
-    }
-
-    // Create keyboard buttons (using reply keyboard for Telegram keyboard buttons)
-    const keyboard = userGroups.map((group) => [
-      Markup.button.text(`${group.title} (${group.memberCount || 'N/A'} members)`),
-    ]);
-
-    // Set conversation state
-    await conversationService.setState(userId, chatId, 'setup_select_group', {
-      groups: userGroups,
-    });
+    // Set conversation state (waiting for native chat picker)
+    await conversationService.setState(userId, chatId, 'setup_select_group', {});
 
     await ctx.reply(
       '💫 *Safeguard Fast Setup*\n\n' +
-        'To begin, click below and select the group you want to attach your portal to\n\n' +
-        '_(Safeguard will be automatically added as admin)_',
+        'Tap the button below and choose the group you want to protect.\n' +
+        'Telegram will show only groups where you are an admin and can add the bot.\n\n' +
+        '_(If you don\'t see a group, add the bot there as admin and try again.)_',
       {
         parse_mode: 'Markdown',
-        ...Markup.keyboard([...keyboard, [Markup.button.text('❌ Cancel')]]).oneTime().resize(),
+        reply_markup: {
+          keyboard: [
+            [
+              {
+                text: '👥 Select Group',
+                request_chat: {
+                  request_id: 2,
+                  chat_is_channel: false,
+                  chat_is_forum: false,
+                  user_administrator_rights: {
+                    is_anonymous: false,
+                    can_manage_chat: true, // manage messages/pins
+                    can_delete_messages: true,
+                    can_manage_video_chats: false,
+                    can_restrict_members: true,
+                    can_promote_members: false,
+                    can_change_info: false,
+                    can_invite_users: true,
+                    can_post_messages: false,
+                    can_edit_messages: false,
+                    can_pin_messages: false,
+                    can_manage_topics: false,
+                  },
+                  bot_administrator_rights: {
+                    is_anonymous: false,
+                    can_manage_chat: true,
+                    can_delete_messages: true,
+                    can_manage_video_chats: false,
+                    can_restrict_members: true,
+                    can_promote_members: false,
+                    can_change_info: false,
+                    can_invite_users: true,
+                    can_post_messages: false,
+                    can_edit_messages: false,
+                    can_pin_messages: false,
+                    can_manage_topics: false,
+                  },
+                  bot_is_member: true,
+                },
+              },
+            ],
+            [{ text: '❌ Cancel' }],
+          ],
+          resize_keyboard: true,
+          one_time_keyboard: true,
+        },
       }
     );
   } catch (error) {
@@ -226,6 +245,11 @@ export async function handleChannelShared(ctx: SetupWizardContext) {
       return;
     }
 
+    // Only handle channel selections (request_id 1)
+    if (ctx.message.chat_shared.request_id !== 1) {
+      return;
+    }
+
     const state = await conversationService.getState(userId, chatId);
     if (!state || state.step !== 'setup_select_channel') {
       return; // Not in channel selection step
@@ -285,6 +309,121 @@ export async function handleChannelShared(ctx: SetupWizardContext) {
     }
   } catch (error) {
     logger.error('Error handling channel shared:', error);
+      await ctx.reply('❌ An error occurred. Please try again.');
+  }
+}
+
+/**
+ * Handle group shared via request_chat button
+ */
+export async function handleGroupShared(ctx: SetupWizardContext) {
+  try {
+    const userId = ctx.from?.id;
+    const chatId = ctx.chat?.id;
+
+    if (!userId || !chatId || !ctx.message || !('chat_shared' in ctx.message)) {
+      return;
+    }
+
+    // Only handle group selections (request_id 2)
+    if (ctx.message.chat_shared.request_id !== 2) {
+      return;
+    }
+
+    const state = await conversationService.getState(userId, chatId);
+    if (!state || state.step !== 'setup_select_group') {
+      return; // Not waiting for group selection
+    }
+
+    let sharedChatId = ctx.message.chat_shared.chat_id;
+
+    try {
+      let chat: any;
+      try {
+        chat = await ctx.telegram.getChat(sharedChatId);
+      } catch (err: any) {
+        // Handle migration from group to supergroup
+        const migrateId = err?.parameters?.migrate_to_chat_id;
+        if (migrateId) {
+          sharedChatId = migrateId;
+          chat = await ctx.telegram.getChat(sharedChatId);
+        } else {
+          throw err;
+        }
+      }
+
+      if (chat.type !== 'supergroup' && chat.type !== 'group') {
+        await ctx.reply('❌ Please select a group or supergroup.');
+        return;
+      }
+
+      const groupTitle = 'title' in chat ? chat.title : 'Selected Group';
+
+      // Verify user is admin (Telegram usually guarantees via request_chat, but double-check)
+      let member;
+      try {
+        member = await ctx.telegram.getChatMember(sharedChatId, userId);
+      } catch (err: any) {
+        const migrateId = err?.parameters?.migrate_to_chat_id;
+        if (migrateId) {
+          sharedChatId = migrateId;
+          member = await ctx.telegram.getChatMember(sharedChatId, userId);
+        } else {
+          throw err;
+        }
+      }
+
+      if (member.status !== 'creator' && member.status !== 'administrator') {
+        await ctx.reply('❌ You must be an admin in the selected group.');
+        return;
+      }
+
+      // Ensure bot is present and has permissions
+      let botHasRights = false;
+      try {
+        const admins = await ctx.telegram.getChatAdministrators(sharedChatId);
+        const botId = ctx.botInfo.id;
+        botHasRights = admins.some((admin) => admin.user.id === botId);
+      } catch (adminError) {
+        logger.warn('Could not check bot admin rights for group:', adminError);
+      }
+
+      if (!botHasRights) {
+        await ctx.reply(
+          '⚠️ I need to be added as an admin in that group first.\n\n' +
+            'Please add me with permissions to invite users, pin messages, and delete spam, then tap "Select Group" again.',
+          { reply_markup: { remove_keyboard: true } }
+        );
+        return;
+      }
+
+      // Upsert the group in DB so later steps have it
+      try {
+        const savedGroup = await groupService.upsertGroup(chat as any);
+
+        await conversationService.updateData(userId, chatId, {
+          selectedGroupId: savedGroup.id,
+          selectedGroupTelegramId: savedGroup.telegramId.toString(),
+          groupTitle,
+        });
+      } catch (dbError) {
+        logger.warn('Failed to upsert group during selection:', dbError);
+      }
+
+      await ctx.reply(`✅ Group selected: *${groupTitle}*\n\nNext: pick your portal channel.`, {
+        parse_mode: 'Markdown',
+        reply_markup: { remove_keyboard: true },
+      });
+
+      // Move to channel selection
+      await conversationService.nextStep(userId, chatId, 'setup_select_channel');
+      await showChannelSelection(ctx);
+    } catch (error: any) {
+      logger.error('Error handling shared group:', error);
+      await ctx.reply('❌ Could not access that group. Make sure I am added as admin and try again.');
+    }
+  } catch (error) {
+    logger.error('Error handling group shared:', error);
     await ctx.reply('❌ An error occurred. Please try again.');
   }
 }
@@ -319,17 +458,11 @@ export async function handleSetupTextInput(ctx: SetupWizardContext) {
 
     // Handle group selection (step: setup_select_group)
     if (state.step === 'setup_select_group') {
-      const groups = state.data.groups || [];
-      const selectedGroup = groups.find((group: any) => text.includes(group.title));
-
-      if (!selectedGroup) {
-        await ctx.reply('❌ Invalid selection. Please select a group from the buttons.');
-        return;
-      }
-
-      await conversationService.updateData(userId, chatId, { selectedGroupId: selectedGroup.id });
-      await conversationService.nextStep(userId, chatId, 'setup_select_channel');
-      await showChannelSelection(ctx);
+      await ctx.reply(
+        '👆 Please tap the *Select Group* button so Telegram can show your admin groups.\n' +
+          'If you don\'t see the list, update Telegram and try again.',
+        { parse_mode: 'Markdown' }
+      );
       return;
     }
 
@@ -338,6 +471,7 @@ export async function handleSetupTextInput(ctx: SetupWizardContext) {
       const tokenAddress = text.trim();
       const chain = state.data.selectedChain;
       const groupId = state.data.selectedGroupId;
+      const groupTelegramId = state.data.selectedGroupTelegramId;
 
       if (!chain || !groupId) {
         await ctx.reply('❌ Session expired. Please start over with /setup');
@@ -355,7 +489,16 @@ export async function handleSetupTextInput(ctx: SetupWizardContext) {
 
       try {
         // Get the group
-        const group = await groupService.getGroupByTelegramId(parseInt(groupId));
+        let group = null;
+        if (groupTelegramId) {
+          const tgId = Number(groupTelegramId);
+          if (!Number.isNaN(tgId)) {
+            group = await groupService.getGroupByTelegramId(tgId);
+          }
+        }
+        if (!group && groupId) {
+          group = await prisma.group.findUnique({ where: { id: groupId } });
+        }
         if (!group) {
           await ctx.reply('❌ Group not found. Please start over with /setup');
           await conversationService.clearState(userId, chatId);
@@ -570,11 +713,13 @@ export async function completePortalSetup(ctx: SetupWizardContext) {
         channelUsername,
         headerText: state.data.headerText || '🛡️ Welcome to the Group!',
         description: state.data.description || 'Complete verification to join our community.',
+        botUsername: ctx.botInfo?.username,
       });
 
       logger.info(`Portal created: ${portal.id} for group ${groupId}`);
 
       await portalService.revokePublicInviteLinks(groupId, ctx);
+      await portalService.updatePortalMessage(portal.id, ctx);
 
       // Show success message with buy bot option
       await ctx.editMessageText(
@@ -686,10 +831,29 @@ async function getUserAdminChannels(
   return [];
 }
 
+/**
+ * Dispatch handler for chat_shared (groups/channels)
+ */
+export async function handleChatShared(ctx: SetupWizardContext) {
+  if (!ctx.message || !('chat_shared' in ctx.message)) {
+    return;
+  }
+
+  const requestId = ctx.message.chat_shared.request_id;
+  if (requestId === 1) {
+    return handleChannelShared(ctx);
+  }
+  if (requestId === 2) {
+    return handleGroupShared(ctx);
+  }
+}
+
 export default {
   startSetupWizard,
   handleSetupTextInput,
   handleChannelShared,
+  handleGroupShared,
+  handleChatShared,
   handlePortalCustomization,
   completePortalSetup,
   cancelSetupWizard,

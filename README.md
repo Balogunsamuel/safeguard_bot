@@ -25,15 +25,20 @@ A production-ready Telegram bot for crypto communities that provides user verifi
 
 ## 📋 Table of Contents
 
-- [Prerequisites](#prerequisites)
 - [Quick Start](#quick-start)
+- [Features](#features)
+- [Bot Commands](#bot-commands)
 - [Configuration](#configuration)
 - [Deployment](#deployment)
-- [Bot Commands](#bot-commands)
-- [API Endpoints](#api-endpoints)
-- [Architecture](#architecture)
-- [Development](#development)
-- [Production Deployment](#production-deployment)
+- [Documentation](#documentation)
+
+## 📚 Documentation
+
+- **[Setup Guide](SETUP_GUIDE.md)** - Quick 5-minute setup guide
+- **[Features](docs/FEATURES.md)** - Complete feature documentation with examples
+- **[Portal System](docs/PORTAL.md)** - Security, verification & trust levels
+- **[Development](docs/DEVELOPMENT.md)** - Local development workflow and testing
+- **[Architecture](docs/ARCHITECTURE.md)** - Technical deep dive and codebase overview
 
 ## 🔧 Prerequisites
 
