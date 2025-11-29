@@ -1,4 +1,4 @@
-import { Context } from 'telegraf';
+import { Context, Markup } from 'telegraf';
 import * as messages from '../templates/messages';
 import logger from '../utils/logger';
 
@@ -10,9 +10,17 @@ export async function handleAdminHelpAction(ctx: Context) {
     if (!ctx.callbackQuery || !('data' in ctx.callbackQuery)) return;
 
     const action = ctx.callbackQuery.data;
-    await ctx.answerCbQuery();
+
+    // Always attempt to acknowledge the callback, ignore stale errors
+    try {
+      await ctx.answerCbQuery();
+    } catch {
+      /* ignore */
+    }
 
     let text: string | null = null;
+    let replyMarkup: any = messages.adminHelpSectionKeyboard();
+
     switch (action) {
       case 'help_addtoken':
         text = messages.adminHelpAddToken();
@@ -47,12 +55,30 @@ export async function handleAdminHelpAction(ctx: Context) {
       case 'help_stats':
         text = messages.adminHelpStats();
         break;
+      case 'help_back':
+        text = messages.adminHelpMessage();
+        replyMarkup = messages.adminHelpKeyboard();
+        break;
       default:
         break;
     }
 
     if (text) {
-      await ctx.reply(text, { parse_mode: 'Markdown' });
+      // Prefer editing the existing help message to keep buttons working in groups
+      try {
+        await ctx.editMessageText(text, {
+          parse_mode: 'Markdown',
+          reply_markup: replyMarkup,
+          disable_web_page_preview: true,
+        });
+      } catch (err) {
+        // Fallback to sending a new message if edit fails (e.g., message too old)
+        await ctx.reply(text, {
+          parse_mode: 'Markdown',
+          reply_markup: replyMarkup,
+          disable_web_page_preview: true,
+        });
+      }
     }
   } catch (error) {
     logger.error('Error handling admin help action:', error);

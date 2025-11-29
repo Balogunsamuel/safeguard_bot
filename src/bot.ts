@@ -31,6 +31,7 @@ import * as portalEvents from './handlers/portal.events';
 import * as setupWizard from './handlers/setup.wizard';
 import * as startHandler from './handlers/start.handler';
 import helpHandler from './handlers/help.handler';
+import * as configHandler from './handlers/config.handler';
 
 // Initialize bot
 const bot = new Telegraf(config.telegram.token);
@@ -146,6 +147,11 @@ async function getPairAddress(chain: string, tokenAddress: string): Promise<stri
  * Start command - New Safeguard-style with interactive menu
  */
 bot.command('start', startHandler.handleStartCommand);
+
+/**
+ * Config command
+ */
+bot.command('config', configHandler.handleConfigCommand);
 
 /**
  * Help command
@@ -476,7 +482,7 @@ bot.command('setminusd', async (ctx) => {
     if (args.length < 2) {
       return ctx.reply(
         '💵 **Set Minimum Buy Alert in USD**\n\n' +
-          'Usage: /setminusd <symbol> <usd_amount>\n' +
+          'Usage: `/setminusd \\<symbol\\> \\<usd_amount\\>`\n' +
           'Example: /setminusd BONK 50\n\n' +
           'This will only alert when a buy transaction is worth $50 or more.',
         { parse_mode: 'Markdown' }
@@ -496,7 +502,10 @@ bot.command('setminusd', async (ctx) => {
     }
 
     const tokens = await tokenService.getGroupTokens(group.id);
-    const token = tokens.find((t) => t.tokenSymbol.toLowerCase() === symbol.toLowerCase());
+    const normalizeSymbol = (s: string) => s.replace(/[^a-z0-9]/gi, '').toLowerCase();
+    const token =
+      tokens.find((t) => t.tokenSymbol.toLowerCase() === symbol.toLowerCase()) ||
+      tokens.find((t) => normalizeSymbol(t.tokenSymbol) === normalizeSymbol(symbol));
 
     if (!token) {
       return ctx.reply(`Token ${symbol} not found in tracked list. Use /listtokens to see all tracked tokens.`);
@@ -1114,32 +1123,10 @@ bot.action(/^setup_add_buttons$/, setupWizard.handlePortalCustomization);
 bot.action(/^setup_create_portal$/, setupWizard.completePortalSetup);
 bot.action(/^setup_cancel$/, setupWizard.cancelSetupWizard);
 
-/**
- * Portal completion callbacks
- */
-bot.action(/^config_group_/, async (ctx) => {
-  await ctx.answerCbQuery('⚙️ Opening group settings...');
-  let callbackData = '';
-  if (ctx.callbackQuery && 'data' in ctx.callbackQuery && ctx.callbackQuery.data) {
-    callbackData = ctx.callbackQuery.data;
-  }
-  const groupId = callbackData.split('_')[2] || undefined;
-  await ctx.editMessageText(
-    '⚙️ *Group Configuration*\n\n' +
-    'Use these commands in your group to manage settings:\n\n' +
-    '**Portal Settings:**\n' +
-    '`/portalstats` - View portal statistics\n' +
-    '`/spamconfig` - Configure spam control\n' +
-    '`/trustlevel` - Check user trust levels\n\n' +
-    '**Token Tracking:**\n' +
-    '`/addtoken` - Add a token to track\n' +
-    '`/listtokens` - View tracked tokens\n\n' +
-    '**Moderation:**\n' +
-    '`/promote` - Promote user trust level\n' +
-    '`/demote` - Demote user trust level',
-    { parse_mode: 'Markdown' }
-  );
-});
+// Config console callbacks
+bot.action('config_list_groups', configHandler.handleConfigListGroups);
+bot.action(/^config_group_/, configHandler.handleConfigGroupSelection);
+bot.action(/^config_menu_/, configHandler.handleConfigMenuAction);
 
 bot.action(/^setup_complete$/, async (ctx) => {
   await ctx.answerCbQuery('✅ Setup complete!');

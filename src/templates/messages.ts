@@ -7,6 +7,9 @@ import {
   formatLargeNumber,
 } from '../utils/formatters';
 
+// Escape basic Markdown v2-sensitive characters used in inline code/labels
+const escapeMd = (text: string) => text.replace(/([*_`])/g, '\\$1');
+
 /**
  * Welcome message when bot is added to a group
  */
@@ -94,21 +97,18 @@ export const buyAlert = (data: {
   isWhale?: boolean;
   marketCap?: number;
 }) => {
-  const emojiPrefix = data.emoji || '💰';
-  const whaleIndicator = data.isWhale ? '🐋 **WHALE ALERT** 🐋\n\n' : '';
+  const emojiPrefix = data.emoji || '🟢';
+  const whaleTag = data.isWhale ? '🐋 ' : '';
 
-  return `
-${whaleIndicator}${emojiPrefix} **New Buy Alert!**
+  const usdValue = data.priceUsd ? formatUSD(data.priceUsd) : 'N/A';
+  const mcapLine = data.marketCap ? `💎 **MC:** ${formatUSD(data.marketCap)}\n` : '';
 
-**Token:** $${data.tokenSymbol}
-**Amount:** ${formatNumber(data.amountToken, 4)} ${data.tokenSymbol}
-**Value:** ${formatNumber(data.amountNative, 4)} ${data.nativeSymbol}${
-    data.priceUsd ? ` (~${formatUSD(data.priceUsd)})` : ''
-  }${data.marketCap ? `\n**Market Cap:** ${formatUSD(data.marketCap)}` : ''}
-**Wallet:** \`${shortenAddress(data.walletAddress)}\`
-**Time:** ${formatTimestamp(data.timestamp)}
+  return `${whaleTag}${emojiPrefix} **$${data.tokenSymbol} BUY!**
 
-[View TX](${getExplorerUrl(data.chain, data.txHash)})
+💵 **${usdValue}** (${formatNumber(data.amountNative, 4)} ${data.nativeSymbol})
+🪙 ${formatNumber(data.amountToken, 2)} ${data.tokenSymbol}
+${mcapLine}👤 [\`${shortenAddress(data.walletAddress)}\`](${getExplorerUrl(data.chain, data.walletAddress, 'address')})
+🔗 [TX](${getExplorerUrl(data.chain, data.txHash)})
 `;
 };
 
@@ -234,6 +234,8 @@ export const adminHelpMessage = () => `
 
 Pick what you want to do and we’ll show the exact steps/commands.
 Use this in DM for the full interactive experience.
+
+If you’re in a group and edits don’t work, I’ll send new messages for each section.
 `;
 
 export const adminHelpKeyboard = () => ({
@@ -260,6 +262,10 @@ export const adminHelpKeyboard = () => ({
     ],
     [{ text: '📊 Stats / Trending', callback_data: 'help_stats' }],
   ],
+});
+
+export const adminHelpSectionKeyboard = () => ({
+  inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'help_back' }]],
 });
 
 export const adminHelpAddToken = () => `
@@ -373,8 +379,12 @@ export const tokenListMessage = (
   let message = '📋 **Tracked Tokens**\n\n';
 
   tokens.forEach((token, index) => {
-    message += `${index + 1}. **$${token.tokenSymbol}** (${token.chain.toUpperCase()})\n`;
-    message += `   Address: \`${shortenAddress(token.tokenAddress, 6)}\`\n`;
+    const symbol = escapeMd(token.tokenSymbol);
+    const chain = escapeMd(token.chain.toUpperCase());
+    const addr = escapeMd(shortenAddress(token.tokenAddress, 6));
+
+    message += `${index + 1}. **$${symbol}** (${chain})\n`;
+    message += `   Address: \`${addr}\`\n`;
 
     if (token.minAmountUsd > 0) {
       message += `   Min Alert: $${token.minAmountUsd.toFixed(2)} USD\n\n`;
