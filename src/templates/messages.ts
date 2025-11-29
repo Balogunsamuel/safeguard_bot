@@ -96,19 +96,49 @@ export const buyAlert = (data: {
   emoji?: string;
   isWhale?: boolean;
   marketCap?: number;
+  tokenAddress?: string;
+  trendingRank?: number;
 }) => {
   const emojiPrefix = data.emoji || '🟢';
-  const whaleTag = data.isWhale ? '🐋 ' : '';
+  const whaleIndicator = data.isWhale ? '🐋 **WHALE ALERT** 🐋\n\n' : '';
 
-  const usdValue = data.priceUsd ? formatUSD(data.priceUsd) : 'N/A';
-  const mcapLine = data.marketCap ? `💎 **MC:** ${formatUSD(data.marketCap)}\n` : '';
+  // Generate multiple dots based on emoji or default green
+  const dots = (emojiPrefix || '🟢').repeat(12);
 
-  return `${whaleTag}${emojiPrefix} **$${data.tokenSymbol} BUY!**
+  // Build dynamic links based on chain and token address
+  let dextLink = 'https://dextools.io';
+  let screenerLink = 'https://dexscreener.com';
+  let buyLink = 'https://jup.ag';
+  let trendingLink = 'https://dexscreener.com/trending';
 
-💵 **${usdValue}** (${formatNumber(data.amountNative, 4)} ${data.nativeSymbol})
-🪙 ${formatNumber(data.amountToken, 2)} ${data.tokenSymbol}
-${mcapLine}👤 [\`${shortenAddress(data.walletAddress)}\`](${getExplorerUrl(data.chain, data.walletAddress, 'address')})
-🔗 [TX](${getExplorerUrl(data.chain, data.txHash)})
+  if (data.tokenAddress) {
+    if (data.chain === 'solana') {
+      dextLink = `https://www.dextools.io/app/en/solana/pair-explorer/${data.tokenAddress}`;
+      screenerLink = `https://dexscreener.com/solana/${data.tokenAddress}`;
+      buyLink = `https://jup.ag/swap/SOL-${data.tokenAddress}`;
+    } else if (data.chain === 'ethereum') {
+      dextLink = `https://www.dextools.io/app/en/ether/pair-explorer/${data.tokenAddress}`;
+      screenerLink = `https://dexscreener.com/ethereum/${data.tokenAddress}`;
+      buyLink = `https://app.uniswap.org/#/swap?outputCurrency=${data.tokenAddress}`;
+    } else if (data.chain === 'bsc') {
+      dextLink = `https://www.dextools.io/app/en/bnb/pair-explorer/${data.tokenAddress}`;
+      screenerLink = `https://dexscreener.com/bsc/${data.tokenAddress}`;
+      buyLink = `https://pancakeswap.finance/swap?outputCurrency=${data.tokenAddress}`;
+    }
+  }
+
+  // Trending rank badge
+  const trendingBadge = data.trendingRank
+    ? `\n\n📊 #${data.trendingRank} On ${data.chain.toUpperCase()} Trending 📊`
+    : '';
+
+  return `${whaleIndicator}**${data.tokenSymbol} Coin Buy!**
+${dots}
+
+💵 Spent ${data.priceUsd ? formatUSD(data.priceUsd) : formatNumber(data.amountNative, 4) + ' ' + data.nativeSymbol} (${formatNumber(data.amountNative, 4)} ${data.nativeSymbol})
+🪙 Got ${formatNumber(data.amountToken, 2)} ${data.tokenSymbol}${data.marketCap ? `\n💰 Market Cap ${formatUSD(data.marketCap)}` : ''}
+
+[DexT](${dextLink}) | [Screener](${screenerLink}) | [Buy](${buyLink}) | [Trending](${trendingLink})${trendingBadge}
 `;
 };
 

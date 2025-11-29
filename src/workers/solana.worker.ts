@@ -314,6 +314,7 @@ export class SolanaWorker {
         emoji: swapData.type === 'buy' ? emoji : undefined,
         isWhale: swapData.type === 'buy' ? isWhale : undefined,
         marketCap: swapData.type === 'buy' ? marketCap : undefined,
+        tokenAddress: token.tokenAddress,
       };
 
       const message =
@@ -331,6 +332,7 @@ export class SolanaWorker {
               caption: message,
               parse_mode: 'Markdown',
               reply_markup: replyMarkup,
+              disable_web_page_preview: true,
             }
           );
         } else if (media.type === 'image') {
@@ -341,6 +343,7 @@ export class SolanaWorker {
               caption: message,
               parse_mode: 'Markdown',
               reply_markup: replyMarkup,
+              disable_web_page_preview: true,
             }
           );
         } else if (media.type === 'video') {
@@ -351,6 +354,7 @@ export class SolanaWorker {
               caption: message,
               parse_mode: 'Markdown',
               reply_markup: replyMarkup,
+              disable_web_page_preview: true,
             }
           );
         }
@@ -359,6 +363,7 @@ export class SolanaWorker {
         await bot.telegram.sendMessage(Number(token.group.telegramId), message, {
           parse_mode: 'Markdown',
           reply_markup: replyMarkup,
+          disable_web_page_preview: true,
         });
       }
 
@@ -367,8 +372,18 @@ export class SolanaWorker {
           isWhale ? ' [WHALE]' : ''
         }`
       );
-    } catch (error) {
-      logger.error('Error sending alert:', error);
+    } catch (error: any) {
+      // Handle bot kicked from group
+      if (error?.response?.error_code === 403) {
+        logger.warn(
+          `Bot was kicked from group ${token.group.telegramId}. Stopping monitoring for this token.`,
+          { tokenId: token.id, groupId: token.group.telegramId }
+        );
+        // You could add logic here to mark the token as inactive or remove it
+        // For now, just log and continue
+      } else {
+        logger.error('Error sending alert:', error);
+      }
     }
   }
 
