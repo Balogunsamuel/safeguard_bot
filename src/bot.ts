@@ -1,4 +1,4 @@
-import { Telegraf, Context } from 'telegraf';
+import { Telegraf, Context, Markup } from 'telegraf';
 import { message } from 'telegraf/filters';
 import { ethers } from 'ethers';
 import config from './config';
@@ -17,6 +17,19 @@ import competitionService from './services/competition.service';
 import trendingService from './services/trending.service';
 import * as messages from './templates/messages';
 import { sanitizeInput } from './utils/formatters';
+
+// Portal system imports
+import {
+  scamBlockerService,
+  verificationService,
+  portalService,
+  antiRaidService,
+  conversationService,
+} from './services';
+import * as portalHandlers from './handlers/portal.handlers';
+import * as portalEvents from './handlers/portal.events';
+import * as setupWizard from './handlers/setup.wizard';
+import * as startHandler from './handlers/start.handler';
 
 // Initialize bot
 const bot = new Telegraf(config.telegram.token);
@@ -129,28 +142,9 @@ async function getPairAddress(chain: string, tokenAddress: string): Promise<stri
 }
 
 /**
- * Start command
+ * Start command - New Safeguard-style with interactive menu
  */
-bot.command('start', async (ctx) => {
-  try {
-    if (ctx.chat.type === 'private') {
-      await ctx.reply(
-        'Welcome to Safeguard Bot! 🛡️\n\n' +
-          'Add me to your Telegram group to start tracking tokens and verifying users.\n\n' +
-          'Use /help to see all available commands.'
-      );
-    } else {
-      // Upsert group
-      if ('title' in ctx.chat) {
-        await groupService.upsertGroup(ctx.chat);
-        await ctx.reply(messages.welcomeMessage(ctx.chat.title));
-      }
-    }
-  } catch (error) {
-    logger.error('Error in start command:', error);
-    await ctx.reply(messages.errorMessage('Failed to start bot.'));
-  }
-});
+bot.command('start', startHandler.handleStartCommand);
 
 /**
  * Help command
@@ -1051,6 +1045,236 @@ bot.command('trending', async (ctx) => {
   }
 });
 
+// ============================================
+// PORTAL SYSTEM COMMANDS & HANDLERS
+// ============================================
+
+/**
+ * Portal setup command - Interactive wizard (works in private chat)
+ */
+bot.command('setup', setupWizard.startSetupWizard);
+
+/**
+ * Trust level command
+ */
+bot.command('trustlevel', portalHandlers.handleTrustLevelCommand);
+
+/**
+ * Promote user command
+ */
+bot.command('promote', portalHandlers.handlePromoteCommand);
+
+/**
+ * Demote user command
+ */
+bot.command('demote', portalHandlers.handleDemoteCommand);
+
+/**
+ * End lockdown command
+ */
+bot.command('endlockdown', portalHandlers.handleEndLockdownCommand);
+
+/**
+ * Spam config command
+ */
+bot.command('spamconfig', portalHandlers.handleSpamConfigCommand);
+
+/**
+ * Portal stats command
+ */
+bot.command('portalstats', portalHandlers.handlePortalStatsCommand);
+
+/**
+ * Initialize scam patterns command
+ */
+bot.command('initscam', portalHandlers.handleInitScamPatternsCommand);
+
+// ============================================
+// INTERACTIVE WIZARD CALLBACKS
+// ============================================
+
+/**
+ * Setup wizard callbacks
+ */
+bot.action(/^setup_add_media$/, setupWizard.handlePortalCustomization);
+bot.action(/^setup_change_text$/, setupWizard.handlePortalCustomization);
+bot.action(/^setup_add_buttons$/, setupWizard.handlePortalCustomization);
+bot.action(/^setup_create_portal$/, setupWizard.completePortalSetup);
+bot.action(/^setup_cancel$/, setupWizard.cancelSetupWizard);
+
+/**
+ * Portal completion callbacks
+ */
+bot.action(/^config_group_/, async (ctx) => {
+  await ctx.answerCbQuery('⚙️ Opening group settings...');
+  let callbackData = '';
+  if (ctx.callbackQuery && 'data' in ctx.callbackQuery && ctx.callbackQuery.data) {
+    callbackData = ctx.callbackQuery.data;
+  }
+  const groupId = callbackData.split('_')[2] || undefined;
+  await ctx.editMessageText(
+    '⚙️ *Group Configuration*\n\n' +
+    'Use these commands in your group to manage settings:\n\n' +
+    '**Portal Settings:**\n' +
+    '`/portalstats` - View portal statistics\n' +
+    '`/spamconfig` - Configure spam control\n' +
+    '`/trustlevel` - Check user trust levels\n\n' +
+    '**Token Tracking:**\n' +
+    '`/addtoken` - Add a token to track\n' +
+    '`/listtokens` - View tracked tokens\n\n' +
+    '**Moderation:**\n' +
+    '`/promote` - Promote user trust level\n' +
+    '`/demote` - Demote user trust level',
+    { parse_mode: 'Markdown' }
+  );
+});
+
+bot.action(/^setup_complete$/, async (ctx) => {
+  await ctx.answerCbQuery('✅ Setup complete!');
+  await ctx.editMessageText(
+    '✅ *Setup Complete!*\n\n' +
+    'Your portal is now active and protecting your group!\n\n' +
+    '**Next Steps:**\n' +
+    '• Add a token to track with `/addtoken`\n' +
+    '• Customize spam settings with `/spamconfig`\n' +
+    '• View statistics with `/portalstats`\n\n' +
+    'Need help? Use `/help` in your group.',
+    { parse_mode: 'Markdown' }
+  );
+});
+
+bot.action(/^setup_buy_bot$/, async (ctx) => {
+  try {
+    await ctx.answerCbQuery('📊 Setting up buy bot...');
+
+    // Get the user's info
+    const userId = ctx.from?.id;
+    const chatId = ctx.chat?.id;
+
+    if (!userId || !chatId) {
+      return;
+    }
+
+    // Get the current state to preserve selectedGroupId
+    const currentState = await conversationService.getState(userId, chatId);
+    if (!currentState || !currentState.data.selectedGroupId) {
+      await ctx.answerCbQuery('❌ Session expired. Please start over with /setup');
+      await ctx.editMessageText('❌ Session expired. Please run /setup again in your group.');
+      return;
+    }
+
+    // Set conversation state for buy bot setup, preserving selectedGroupId
+    await conversationService.setState(userId, chatId, 'buybot_select_chain', {
+      selectedGroupId: currentState.data.selectedGroupId,
+    });
+
+    await ctx.editMessageText(
+      '📊 *Buy Bot Setup*\n\n' +
+      'Please select the chain of your token below:',
+      {
+        parse_mode: 'Markdown',
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback('Ethereum', 'buybot_chain_ethereum')],
+          [Markup.button.callback('Solana', 'buybot_chain_solana')],
+          [Markup.button.callback('Binance Smart Chain', 'buybot_chain_bsc')],
+          [Markup.button.callback('TON', 'buybot_chain_ton')],
+          [Markup.button.callback('Base', 'buybot_chain_base')],
+          [Markup.button.callback('Polygon', 'buybot_chain_polygon')],
+          [Markup.button.callback('❌ Cancel', 'setup_cancel')],
+        ]),
+      }
+    );
+  } catch (error) {
+    logger.error('Error in setup_buy_bot handler:', error);
+    await ctx.answerCbQuery('❌ An error occurred');
+    await ctx.editMessageText('❌ An error occurred. Please try /setup again.');
+  }
+});
+
+/**
+ * Handle buy bot chain selection
+ */
+bot.action(/^buybot_chain_(.+)$/, async (ctx) => {
+  const chain = ctx.match[1];
+  const userId = ctx.from?.id;
+  const chatId = ctx.chat?.id;
+
+  if (!userId || !chatId) {
+    return;
+  }
+
+  await ctx.answerCbQuery(`Selected: ${chain}`);
+
+  // Update conversation state with selected chain
+  await conversationService.updateData(userId, chatId, { selectedChain: chain });
+  await conversationService.nextStep(userId, chatId, 'buybot_enter_address');
+
+  // Ask for token address
+  const chainNames: { [key: string]: string } = {
+    ethereum: 'Ethereum',
+    solana: 'Solana',
+    bsc: 'Binance Smart Chain',
+    ton: 'TON',
+    base: 'Base',
+    polygon: 'Polygon',
+  };
+
+  await ctx.editMessageText(
+    `📊 *Buy Bot Setup*\n\n` +
+    `Chain: *${chainNames[chain] || chain}*\n\n` +
+    `Send the token address to track [${chainNames[chain] || chain}]`,
+    {
+      parse_mode: 'Markdown',
+      ...Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel', 'setup_cancel')]]),
+    }
+  );
+});
+
+/**
+ * Start menu callbacks
+ */
+bot.action(/^start_/, startHandler.handleStartMenuCallback);
+
+/**
+ * Handle new members joining (anti-raid + trust levels)
+ */
+bot.on('new_chat_members', portalEvents.handleNewChatMembers);
+
+/**
+ * Handle text messages during setup wizard (must be before general message handler)
+ */
+bot.on('text', setupWizard.handleSetupTextInput);
+
+/**
+ * Handle channel shared (request_chat button response)
+ */
+bot.on(message('chat_shared'), setupWizard.handleChannelShared);
+
+/**
+ * Handle all messages (setup wizard input, spam/scam filtering + trust tracking)
+ */
+bot.on('message', async (ctx, next) => {
+  // First check if this is a setup wizard text input (only in private chats)
+  if (ctx.chat?.type === 'private' && 'text' in ctx.message) {
+    await setupWizard.handleSetupTextInput(ctx);
+  }
+
+  // Continue to spam/scam filtering for group messages
+  return next();
+});
+
+bot.on('message', portalEvents.handleMessage);
+
+/**
+ * Handle verification callback
+ */
+bot.action(/^verify_/, portalEvents.handleVerifyCallback);
+
+/**
+ * Handle answer callback
+ */
+bot.action(/^answer_/, portalEvents.handleAnswerCallback);
+
 /**
  * Error handler
  */
@@ -1074,6 +1298,12 @@ export async function startBot() {
     await connectDatabase();
     await connectRedis();
 
+    // Initialize scam detection patterns (one-time)
+    logger.info('Initializing scam detection patterns...');
+    await scamBlockerService.initializeScamPatterns();
+    const scamStats = await scamBlockerService.getScamStats();
+    logger.info(`Scam patterns initialized: ${scamStats?.total || 0} patterns loaded`);
+
     // Launch bot
     if (config.telegram.webhookUrl) {
       // Webhook mode (production)
@@ -1087,11 +1317,52 @@ export async function startBot() {
       logger.info('Bot started in polling mode');
     }
 
+    // Start background cleanup tasks
+    startBackgroundTasks();
+
     logger.info('Telegram bot is running');
   } catch (error) {
     logger.error('Failed to start bot:', error);
     process.exit(1);
   }
+}
+
+/**
+ * Background cleanup and maintenance tasks
+ */
+function startBackgroundTasks() {
+  // Cleanup expired items every 5 minutes
+  setInterval(async () => {
+    try {
+      const expiredAttempts = await verificationService.cleanupExpiredAttempts();
+      const expiredLinks = await portalService.cleanupExpiredLinks();
+      const resolvedRaids = await antiRaidService.autoResolveExpiredLockdowns();
+      const expiredConversations = await conversationService.cleanupExpiredConversations();
+
+      if (expiredAttempts > 0 || expiredLinks > 0 || resolvedRaids > 0 || expiredConversations > 0) {
+        logger.info('Cleanup completed:', {
+          expiredAttempts,
+          expiredLinks,
+          resolvedRaids,
+          expiredConversations,
+        });
+      }
+    } catch (error) {
+      logger.error('Cleanup task error:', error);
+    }
+  }, 5 * 60 * 1000); // 5 minutes
+
+  // Statistics and health check every hour
+  setInterval(async () => {
+    try {
+      logger.info('Hourly health check running...');
+      // Add any health checks or stats aggregation here
+    } catch (error) {
+      logger.error('Health check error:', error);
+    }
+  }, 60 * 60 * 1000); // 1 hour
+
+  logger.info('Background tasks started');
 }
 
 // Export bot instance for webhook integration

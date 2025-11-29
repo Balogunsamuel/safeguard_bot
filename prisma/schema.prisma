@@ -243,3 +243,285 @@ model TrendingToken {
   @@index([rank])
   @@map("trending_tokens")
 }
+
+// ============================================
+// SAFEGUARD-STYLE PORTAL SYSTEM MODELS
+// ============================================
+
+// Portal configuration for groups
+model Portal {
+  id                String   @id @default(cuid())
+  groupId           String   @unique
+  channelId         BigInt   // Public channel (portal) Telegram ID
+  channelUsername   String?  // Channel username if available
+
+  // Portal message configuration
+  headerText        String   @default("🛡️ Welcome to the Group!")
+  description       String   @default("Click the button below to verify and join our community.")
+  mediaType         String?  // 'photo', 'video', 'animation'
+  mediaFileId       String?  // Telegram file ID for media
+  mediaUrl          String?  // Optional URL for media
+
+  // Portal message ID
+  portalMessageId   Int?     // ID of the portal message in channel
+
+  // Verification settings
+  requireCaptcha    Boolean  @default(true)
+  requirePremiumBypass Boolean @default(true) // Premium users skip CAPTCHA
+  captchaDifficulty String   @default("medium") // 'easy', 'medium', 'hard'
+
+  // Invite link settings
+  inviteLinkType    String   @default("one_time") // 'one_time', 'time_limited', 'permanent'
+  inviteLinkExpiry  Int      @default(60) // Seconds for time-limited links
+
+  // Trust level settings
+  enableTrustLevels Boolean  @default(true)
+  level1Duration    Int      @default(86400) // 24 hours in seconds
+  level2Duration    Int      @default(604800) // 7 days in seconds
+
+  // Spam control
+  spamMode          String   @default("standard") // 'off', 'standard', 'strict', 'anti_raid'
+  antiRaidEnabled   Boolean  @default(true)
+  raidThreshold     Int      @default(10) // Joins in 60 seconds to trigger raid mode
+
+  // Status
+  isActive          Boolean  @default(true)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  // Relations
+  buttons           PortalButton[]
+  inviteLinks       InviteLink[]
+  verificationAttempts VerificationAttempt[]
+
+  @@index([groupId])
+  @@index([channelId])
+  @@map("portals")
+}
+
+// Custom buttons for portal messages
+model PortalButton {
+  id         String   @id @default(cuid())
+  portalId   String
+  text       String
+  url        String
+  order      Int      @default(0)
+  isVerifyButton Boolean @default(false)
+  createdAt  DateTime @default(now())
+
+  // Relations
+  portal Portal @relation(fields: [portalId], references: [id], onDelete: Cascade)
+
+  @@index([portalId])
+  @@map("portal_buttons")
+}
+
+// Trust levels for users in groups
+model TrustLevel {
+  id              String   @id @default(cuid())
+  userId          String
+  groupId         String
+  level           Int      @default(1) // 1 = new, 2 = trusted, 3 = VIP
+
+  // Trust metrics
+  joinedAt        DateTime @default(now())
+  messageCount    Int      @default(0)
+  lastMessageAt   DateTime?
+
+  // Warnings and violations
+  warningCount    Int      @default(0)
+  violationCount  Int      @default(0)
+  lastViolationAt DateTime?
+
+  // Auto-promotion tracking
+  lastPromotionAt DateTime?
+
+  // Status
+  isMuted         Boolean  @default(false)
+  mutedUntil      DateTime?
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([userId, groupId])
+  @@index([userId])
+  @@index([groupId])
+  @@index([level])
+  @@map("trust_levels")
+}
+
+// Verification attempts and challenges
+model VerificationAttempt {
+  id              String   @id @default(cuid())
+  portalId        String
+  telegramUserId  BigInt
+  username        String?
+
+  // Challenge details
+  challengeType   String   // 'captcha', 'premium_check', 'emoji_match'
+  challengeData   String?  // JSON data for challenge (e.g., emoji to select)
+
+  // Status
+  status          String   @default("pending") // 'pending', 'solved', 'failed', 'expired'
+  attempts        Int      @default(0)
+  maxAttempts     Int      @default(3)
+
+  // Premium detection
+  isPremium       Boolean  @default(false)
+
+  // Result
+  solvedAt        DateTime?
+  inviteLinkId    String?  // Link to generated invite
+
+  // Expiry
+  expiresAt       DateTime
+  createdAt       DateTime @default(now())
+
+  // Relations
+  portal Portal @relation(fields: [portalId], references: [id], onDelete: Cascade)
+
+  @@index([portalId])
+  @@index([telegramUserId])
+  @@index([status])
+  @@index([expiresAt])
+  @@map("verification_attempts")
+}
+
+// Generated invite links
+model InviteLink {
+  id              String   @id @default(cuid())
+  portalId        String
+  inviteLink      String   @unique
+
+  // Link configuration
+  linkType        String   // 'one_time', 'time_limited', 'permanent'
+  memberLimit     Int?     // For one-time links
+  expiresAt       DateTime?
+
+  // Usage tracking
+  createdFor      BigInt?  // User ID this was created for
+  usedBy          BigInt?  // User ID who used it
+  usedAt          DateTime?
+  isUsed          Boolean  @default(false)
+  isRevoked       Boolean  @default(false)
+
+  createdAt       DateTime @default(now())
+
+  // Relations
+  portal Portal @relation(fields: [portalId], references: [id], onDelete: Cascade)
+
+  @@index([portalId])
+  @@index([inviteLink])
+  @@index([createdFor])
+  @@index([isUsed])
+  @@map("invite_links")
+}
+
+// Spam control configuration per group
+model SpamConfig {
+  id                    String   @id @default(cuid())
+  groupId               String   @unique
+
+  // URL filtering
+  blockUrls             Boolean  @default(true)
+  blockTelegramLinks    Boolean  @default(true)
+  blockContractAddresses Boolean @default(false)
+  whitelistedDomains    String?  // JSON array of allowed domains
+
+  // Content filtering
+  blockLevel1Messages   Boolean  @default(false) // Block all Level 1 messages
+  muteLvel1OnJoin       Boolean  @default(true)  // Mute Level 1 users on join
+
+  // Rate limiting
+  maxMessagesPerMinute  Int      @default(10)
+  maxMessagesPerHour    Int      @default(50)
+
+  // Slowmode for low trust users
+  slowmodeLevel1        Int      @default(0) // Seconds between messages for Level 1
+  slowmodeLevel2        Int      @default(0) // Seconds between messages for Level 2
+
+  // Auto-actions
+  autoDeleteSpam        Boolean  @default(true)
+  autoWarnUser          Boolean  @default(true)
+  autoMuteAfterWarnings Int      @default(3)
+  muteDuration          Int      @default(3600) // Seconds
+
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@index([groupId])
+  @@map("spam_configs")
+}
+
+// Scam detection patterns and rules
+model ScamPattern {
+  id          String   @id @default(cuid())
+  pattern     String   // Regex pattern or exact match
+  type        String   // 'url', 'telegram_link', 'contract', 'keyword', 'unicode'
+  severity    String   @default("medium") // 'low', 'medium', 'high', 'critical'
+  description String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([type])
+  @@index([isActive])
+  @@map("scam_patterns")
+}
+
+// Anti-raid tracking
+model RaidEvent {
+  id              String   @id @default(cuid())
+  groupId         String
+
+  // Event details
+  joinCount       Int      // Number of joins in window
+  timeWindow      Int      @default(60) // Seconds
+  triggeredAt     DateTime @default(now())
+
+  // Actions taken
+  lockdownEnabled Boolean  @default(false)
+  lockdownUntil   DateTime?
+
+  // Users involved
+  userIds         String   // JSON array of Telegram user IDs
+
+  // Resolution
+  resolved        Boolean  @default(false)
+  resolvedAt      DateTime?
+  resolvedBy      BigInt?  // Admin who resolved
+
+  createdAt       DateTime @default(now())
+
+  @@index([groupId])
+  @@index([triggeredAt])
+  @@index([resolved])
+  @@map("raid_events")
+}
+
+// User message activity for rate limiting
+model MessageActivity {
+  id              String   @id @default(cuid())
+  groupId         String
+  telegramUserId  BigInt
+
+  // Activity counters
+  messagesLastMinute Int   @default(0)
+  messagesLastHour   Int   @default(0)
+  lastMessageAt      DateTime @default(now())
+
+  // Violation tracking
+  violationCount  Int      @default(0)
+  lastViolationAt DateTime?
+
+  // Reset timestamps
+  minuteResetAt   DateTime @default(now())
+  hourResetAt     DateTime @default(now())
+
+  updatedAt       DateTime @updatedAt
+
+  @@unique([groupId, telegramUserId])
+  @@index([groupId])
+  @@index([telegramUserId])
+  @@map("message_activities")
+}

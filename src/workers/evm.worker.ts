@@ -331,6 +331,9 @@ export class EVMWorker {
       // Get custom media
       const media = await mediaService.getMedia(token.id);
 
+      // Get market cap
+      const marketCap = await priceService.getTokenMarketCap(token.tokenAddress, chain);
+
       const messageData = {
         tokenSymbol: token.tokenSymbol,
         walletAddress: swapData.walletAddress,
@@ -343,6 +346,7 @@ export class EVMWorker {
         timestamp: new Date(timestamp * 1000),
         emoji: swapData.type === 'buy' ? emoji : undefined,
         isWhale: swapData.type === 'buy' ? isWhale : undefined,
+        marketCap: swapData.type === 'buy' ? marketCap : undefined,
       };
 
       const message =

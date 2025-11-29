@@ -92,6 +92,7 @@ export const buyAlert = (data: {
   timestamp: Date;
   emoji?: string;
   isWhale?: boolean;
+  marketCap?: number;
 }) => {
   const emojiPrefix = data.emoji || '💰';
   const whaleIndicator = data.isWhale ? '🐋 **WHALE ALERT** 🐋\n\n' : '';
@@ -103,7 +104,7 @@ ${whaleIndicator}${emojiPrefix} **New Buy Alert!**
 **Amount:** ${formatNumber(data.amountToken, 4)} ${data.tokenSymbol}
 **Value:** ${formatNumber(data.amountNative, 4)} ${data.nativeSymbol}${
     data.priceUsd ? ` (~${formatUSD(data.priceUsd)})` : ''
-  }
+  }${data.marketCap ? `\n**Market Cap:** ${formatUSD(data.marketCap)}` : ''}
 **Wallet:** \`${shortenAddress(data.walletAddress)}\`
 **Time:** ${formatTimestamp(data.timestamp)}
 

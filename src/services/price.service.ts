@@ -277,6 +277,45 @@ export class PriceService {
       return undefined;
     }
   }
+
+  /**
+   * Get token market cap from DexScreener
+   * Returns market cap in USD or undefined if not available
+   */
+  async getTokenMarketCap(tokenAddress: string, chain: string): Promise<number | undefined> {
+    const cacheKey = `marketcap_${tokenAddress}`;
+    const cached = this.priceCache.get(cacheKey);
+
+    if (cached && Date.now() - cached.timestamp < this.CACHE_DURATION) {
+      return cached.price; // price field used for marketcap too
+    }
+
+    try {
+      const response = await axios.get(
+        `${this.DEXSCREENER_API}/${tokenAddress}`,
+        { timeout: 5000 }
+      );
+
+      // DexScreener API response format: { pairs: [{ fdv, marketCap, ... }] }
+      const pairs = response.data?.pairs;
+      if (pairs && pairs.length > 0) {
+        // Try marketCap first, fallback to FDV (Fully Diluted Valuation)
+        const marketCap = pairs[0].marketCap || pairs[0].fdv;
+
+        if (marketCap) {
+          const mcap = parseFloat(marketCap);
+          this.priceCache.set(cacheKey, { price: mcap, timestamp: Date.now() });
+          logger.debug(`Market cap for ${tokenAddress}: $${mcap.toLocaleString()}`);
+          return mcap;
+        }
+      }
+
+      return undefined;
+    } catch (error) {
+      logger.debug(`Failed to get market cap for ${tokenAddress}:`, error);
+      return undefined;
+    }
+  }
 }
 
 export default new PriceService();

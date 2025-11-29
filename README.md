@@ -4,10 +4,21 @@ A production-ready Telegram bot for crypto communities that provides user verifi
 
 ## 🚀 Features
 
-- **User Verification System**: One-click verification for new members with no external downloads
+### Trading & Analytics
 - **Real-time Trade Tracking**: Monitor buy/sell events on Solana and EVM chains
-- **Custom Alerts**: Configurable minimum thresholds for trade notifications
-- **Trading Analytics**: Daily statistics and volume tracking
+- **Custom Alerts**: Configurable minimum thresholds, whale alerts, custom buttons, media, and emojis
+- **Trading Analytics**: Daily statistics, volume tracking, and trending tokens
+- **Buy Competitions**: Run competitions with leaderboards
+- **MEV Bot Blacklist**: Filter known MEV bots from alerts
+
+### Security & Moderation (Portal System)
+- **Advanced Verification**: CAPTCHA challenges (emoji, math, text) with premium user fast-track
+- **Trust Level System**: 3-tier reputation system (New, Trusted, VIP) with auto-promotion
+- **Spam Control**: 4 protection modes with URL filtering, rate limiting, and auto-moderation
+- **Scam Detection**: Unicode attacks, phishing URLs, fake contracts, and keyword filtering
+- **Anti-Raid Protection**: Automatic detection and lockdown with configurable thresholds
+
+### Administration
 - **Admin Tools**: Complete administrative control via Telegram commands
 - **REST API**: Full-featured API for integrations and custom dashboards
 - **Self-Hostable**: Deploy on your own infrastructure with Docker
@@ -136,26 +147,50 @@ curl -X POST "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook?url=https:
 
 - `/start` - Initialize the bot
 - `/help` - Show help message
-- `/stats` - View group statistics
+- `/verify` - Verify membership in the group
+- `/trustlevel` - Check your trust level and reputation
 - `/listtokens` - List all tracked tokens
+- `/trending [limit]` - View trending tokens
+- `/competition leaderboard` - View buy competition leaderboard
 
 ### Admin Commands
 
+#### Token Management
 - `/addtoken <chain> <address> <symbol> [name]` - Add a token to track
   ```
   Example: /addtoken solana EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v USDC "USD Coin"
   ```
-
 - `/removetoken <symbol>` - Stop tracking a token
-  ```
-  Example: /removetoken USDC
-  ```
+- `/setthreshold <symbol> <amount>` - Set minimum token amount for alerts
+- `/setminusd <symbol> <amount>` - Set minimum USD value for alerts
+- `/setwhale <symbol> <amount>` - Set whale alert threshold
 
-- `/setthreshold <symbol> <amount>` - Set minimum alert amount
-  ```
-  Example: /setthreshold PEPE 1000000
-  ```
+#### Customization
+- `/setbuttons <symbol> <text> <url> [...]` - Add custom buttons to alerts (max 3)
+- `/clearbuttons <symbol>` - Remove custom buttons
+- `/setemoji <symbol> [default]` - Enable emoji tiers for buy amounts
+- `/clearemoji <symbol>` - Disable emoji tiers
+- `/setmedia <symbol> <gif|image|video> <url>` - Add media to alerts
+- `/clearmedia <symbol>` - Remove media from alerts
 
+#### Portal & Security
+- `/setup` - Configure portal system for your group
+- `/trustlevel` - Check any user's trust level (reply to message)
+- `/promote` - Promote user to next trust level (reply to message)
+- `/demote` - Demote user to previous level (reply to message)
+- `/spamconfig` - Configure spam control settings
+- `/portalstats` - View comprehensive portal statistics
+- `/endlockdown` - Manually end raid lockdown
+- `/initscam` - Initialize scam detection patterns
+
+#### Moderation
+- `/blacklist add <address> [reason]` - Blacklist wallet from alerts
+- `/blacklist remove <address>` - Remove wallet from blacklist
+- `/blacklist list [chain]` - View blacklisted wallets
+
+#### Competitions & Analytics
+- `/competition start <name> [hours] [prize]` - Start a buy competition
+- `/competition stop` - End current competition
 - `/groupstats` - View detailed group statistics
 
 ## 🌐 API Endpoints
@@ -271,10 +306,10 @@ curl -H "X-API-Key: your_api_key_here" \
    - Admin endpoints
 
 4. **Services Layer**
-   - User Service: User management and verification
-   - Group Service: Group and verification management
-   - Token Service: Tracked token management
-   - Transaction Service: Transaction recording and stats
+   - **Trading Services:** Price, Token, Transaction, Competition, Trending
+   - **User Management:** User, Group, Verification, Trust Level
+   - **Security Services:** Spam Control, Scam Blocker, Anti-Raid, Portal
+   - **Customization:** Emoji Tiers, Custom Buttons, Media, MEV Blacklist
 
 ## 🛠️ Development
 
@@ -535,6 +570,7 @@ Keep up the momentum! 🚀
 
 ## 🔒 Security Considerations
 
+### General Security
 - ✅ Never stores private keys or seed phrases
 - ✅ Input sanitization to prevent injection attacks
 - ✅ Rate limiting on all endpoints
@@ -542,6 +578,16 @@ Keep up the momentum! 🚀
 - ✅ Webhook secret validation
 - ✅ Runs as non-root user in Docker
 - ✅ Environment variable validation with Zod
+
+### Portal System Security
+- ✅ CAPTCHA verification for new members
+- ✅ 3-tier trust level system with auto-promotion
+- ✅ Advanced spam detection with 4 protection modes
+- ✅ Scam detection (Unicode attacks, phishing, fake contracts)
+- ✅ Anti-raid protection with automatic lockdown
+- ✅ MEV bot blacklist (15+ known bots pre-loaded)
+- ✅ Rate limiting per user (messages per minute/hour)
+- ✅ URL and Telegram link filtering
 
 ## 🐛 Troubleshooting
 
